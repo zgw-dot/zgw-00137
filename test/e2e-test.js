@@ -2183,6 +2183,487 @@ test('52. 冲突分支一致性 - 覆盖/另存为/内置/坏条目 记录和导
     console.log('   ✅ 所有冲突分支：覆盖/另存为(ID+无+内置)/跳过/内置/坏条目 记录+导出+实际三者完全一致');
 });
 
+test('53. 真实页面入口DOM结构解析 - 主菜单入口/恢复记录按钮/弹窗容器可解析', () => {
+    clearAllCustomLevels();
+
+    console.log('   读取index.html并解析DOM结构...');
+    const htmlContent = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+
+    const requiredButtonIds = [
+        'btn-backup-all',
+        'btn-restore-all',
+        'btn-view-restore-history',
+        'btn-undo-batch-restore',
+        'btn-open-last-restore-detail',
+        'btn-export-restore-result',
+        'btn-export-restore-detail',
+        'btn-close-restore-history',
+        'btn-close-restore-detail'
+    ];
+
+    console.log('   检查核心入口按钮...');
+    requiredButtonIds.forEach(id => {
+        const hasBtn = new RegExp(`id=["']${id}["']`).test(htmlContent);
+        assert(hasBtn, `HTML中缺少必需的入口按钮: #${id}`);
+        console.log(`     ✅ #${id} 存在`);
+    });
+
+    const requiredContainerIds = [
+        'main-menu',
+        'last-restore-card',
+        'last-restore-card-content',
+        'restore-history-modal',
+        'restore-history-list',
+        'restore-detail-modal',
+        'restore-detail-status-bar',
+        'restore-detail-summary',
+        'restore-detail-tabs',
+        'restore-detail-tab-content',
+        'restore-result-modal',
+        'restore-result-summary',
+        'restore-result-details',
+        'batch-undo-bar'
+    ];
+
+    console.log('   检查恢复记录相关的弹窗/面板容器...');
+    requiredContainerIds.forEach(id => {
+        const hasContainer = new RegExp(`id=["']${id}["']`).test(htmlContent);
+        assert(hasContainer, `HTML中缺少必需的容器: #${id}`);
+        console.log(`     ✅ #${id} 存在`);
+    });
+
+    const requiredTabClasses = [
+        'detail-tab',
+        'restore-detail-tabs',
+        'restore-detail-status-bar',
+        'restore-detail-summary',
+        'restore-detail-tab-content',
+        'restore-history-list',
+        'history-item',
+        'last-restore-card',
+        'batch-undo-bar'
+    ];
+
+    console.log('   检查详情页Tab分类...');
+    const tabNames = ['new', 'overwrite', 'saveAsNew', 'skipped', 'builtinConflict', 'badEntries', 'failed'];
+    tabNames.forEach(tab => {
+        const hasTab = new RegExp(`data-tab=["']${tab}["']`).test(htmlContent);
+        assert(hasTab, `HTML中缺少详情Tab: data-tab="${tab}"`);
+        console.log(`     ✅ Tab: ${tab} 存在`);
+    });
+
+    console.log('   检查script脚本加载顺序...');
+    const scriptTags = htmlContent.match(/<script[^>]*src=["'][^"']+["'][^>]*>/g) || [];
+    const scriptSources = scriptTags.map(tag => tag.match(/src=["']([^"']+)["']/)[1]);
+
+    const persistenceIdx = scriptSources.indexOf('js/storage/persistence.js');
+    const modelsIdx = scriptSources.indexOf('js/game/models.js');
+    const mainIdx = scriptSources.indexOf('js/main.js');
+
+    assert(persistenceIdx !== -1, '应加载 persistence.js');
+    assert(modelsIdx !== -1, '应加载 models.js');
+    assert(mainIdx !== -1, '应加载 main.js');
+    assert(persistenceIdx < modelsIdx, 'persistence.js 应在 models.js 之前加载（依赖Storage）');
+    assert(modelsIdx < mainIdx, 'models.js 应在 main.js 之前加载');
+
+    console.log(`     ✅ 脚本顺序正确: persistence(${persistenceIdx}) → models(${modelsIdx}) → main(${mainIdx})`);
+
+    console.log('   检查CSS文件引入...');
+    const hasCss = /<link[^>]*href=["']css\/style\.css["']/.test(htmlContent);
+    assert(hasCss, '应引入 css/style.css');
+    console.log('     ✅ css/style.css 已引入');
+
+    console.log('   ✅ 真实页面入口DOM结构完整，可解析可启动');
+});
+
+test('54. 跨重启持久化深度回归 - 模拟3次页面刷新后记录完整', () => {
+    clearAllCustomLevels();
+    Storage.clearLastBatchRestoreInfo();
+
+    Storage.saveCustomLevel(CUSTOM_LEVEL_A, 'import', 'import');
+    Storage.saveCustomLevel(CUSTOM_LEVEL_B, 'import', 'import');
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 4,
+        levels: [
+            { id: 'custom-batch-a', levelData: { ...CUSTOM_LEVEL_A, name: '重启测试覆盖A' }, highScore: 666, completed: true },
+            { id: 'custom-persist-new1', levelData: { ...CUSTOM_LEVEL_A, id: 'custom-persist-new1', name: '重启新增1' }, highScore: 400 },
+            { id: 'level-1', levelData: { id: 'level-1', name: '重启内置冲突' }, highScore: 50 },
+            null
+        ]
+    };
+
+    const decisions = [
+        { action: 'overwrite' },
+        { action: 'import' },
+        { action: 'skip' },
+        { action: 'skip' }
+    ];
+
+    const result = Storage.executeBatchRestore(backupData, decisions);
+    assert(result.success === true, '首次恢复应成功');
+    const recordId = result.recordId;
+    const beforeLevelsKeys = Object.keys(Storage.loadCustomLevels()).sort();
+
+    const lastRestoreBeforeRefresh = JSON.parse(JSON.stringify(Storage.getLastBatchRestoreInfo()));
+    const historyBeforeRefresh = JSON.parse(JSON.stringify(Storage.loadBatchRestoreHistory()));
+    const snapshotBeforeRefresh = JSON.parse(JSON.stringify(Storage.getBatchRestoreUndoSnapshot()));
+
+    console.log('   📟 第1次模拟页面刷新（序列化localStorage后再解析）...');
+    const serializedStorage1 = JSON.parse(JSON.stringify(context.localStorage.data));
+    context.localStorage.data = {};
+    Object.keys(serializedStorage1).forEach(k => {
+        context.localStorage.data[k] = serializedStorage1[k];
+    });
+
+    let levelsAfterR1 = Storage.loadCustomLevels();
+    assert(Object.keys(levelsAfterR1).sort().join(',') === beforeLevelsKeys.join(','),
+        '刷新1后自定义关卡集合不变');
+    assert(levelsAfterR1['custom-batch-a'].name === '重启测试覆盖A', '刷新1后覆盖名称保留');
+
+    let lastRestoreAfterR1 = Storage.getLastBatchRestoreInfo();
+    assert(lastRestoreAfterR1.recordId === recordId, '刷新1后LAST_BATCH_RESTORE的recordId一致');
+    assert(lastRestoreAfterR1.counts.overwrite === 1, '刷新1后counts.overwrite保留');
+    assert(lastRestoreAfterR1.counts.new === 1, '刷新1后counts.new保留');
+    assert(lastRestoreAfterR1.counts.builtinConflict === 1, '刷新1后counts.builtinConflict保留');
+    assert(lastRestoreAfterR1.counts.badEntries === 1, '刷新1后counts.badEntries保留');
+    assert(lastRestoreAfterR1.detailed.overwrite[0].originalName === '批量测试关卡A',
+        '刷新1后detailed.overwrite.originalName保留');
+    assert(lastRestoreAfterR1.detailed.new[0].highScore === 400,
+        '刷新1后detailed.new.highScore保留');
+    assert(lastRestoreAfterR1.undoable === true, '刷新1后undoable标记保留');
+    assert(lastRestoreAfterR1.undone === false, '刷新1后undone标记保留');
+
+    let historyAfterR1 = Storage.loadBatchRestoreHistory();
+    assert(historyAfterR1.length >= 1, '刷新1后历史记录数组非空');
+    assert(historyAfterR1[0].recordId === recordId, '刷新1后历史首条recordId一致');
+
+    let snapshotAfterR1 = Storage.getBatchRestoreUndoSnapshot();
+    assert(!!snapshotAfterR1, '刷新1后撤销快照仍存在');
+    assert(Object.keys(snapshotAfterR1.beforeLevels).length >= 2, '刷新1后快照中的beforeLevels有数据');
+
+    console.log('   📟 第2次模拟页面刷新...');
+    const serializedStorage2 = JSON.parse(JSON.stringify(context.localStorage.data));
+    context.localStorage.data = {};
+    Object.keys(serializedStorage2).forEach(k => {
+        context.localStorage.data[k] = serializedStorage2[k];
+    });
+
+    let lastRestoreAfterR2 = Storage.getLastBatchRestoreInfo();
+    assert(lastRestoreAfterR2.recordId === recordId, '刷新2后recordId不变');
+    assert(lastRestoreAfterR2.detailed.saveAsNew.length === 0, '刷新2后detailed.saveAsNew仍为0');
+    assert(lastRestoreAfterR2.detailed.builtinConflict[0].id === 'level-1',
+        '刷新2后detailed.builtinConflict内容保留');
+    assert(lastRestoreAfterR2.detailed.badEntries[0].reason.includes('无效'),
+        '刷新2后detailed.badEntries的原因保留');
+    assert(JSON.stringify(lastRestoreAfterR2.counts) === JSON.stringify(lastRestoreBeforeRefresh.counts),
+        '刷新2后counts对象与刷新前完全一致');
+
+    console.log('   📟 第3次模拟页面刷新...');
+    const serializedStorage3 = JSON.parse(JSON.stringify(context.localStorage.data));
+    context.localStorage.data = {};
+    Object.keys(serializedStorage3).forEach(k => {
+        context.localStorage.data[k] = serializedStorage3[k];
+    });
+
+    let recordAfterR3 = Storage.getBatchRestoreRecord(recordId);
+    assert(!!recordAfterR3, '刷新3后按recordId查询仍能找到记录');
+    assert(recordAfterR3.decisions[0].action === 'overwrite', '刷新3后用户决策decisions保留');
+    assert(recordAfterR3.summary.imported === 2, '刷新3后summary.imported保留');
+
+    console.log('   ✅ 3次模拟刷新后：记录ID/数量/分类/用户决策/撤销快照/历史记录 全部完整保留');
+});
+
+test('55. 导出JSON往返复查 - 导出→落盘→再解析→与原记录逐项对比', () => {
+    clearAllCustomLevels();
+    Storage.clearLastBatchRestoreInfo();
+
+    Storage.saveCustomLevel(CUSTOM_LEVEL_A, 'import', 'import');
+    Storage.saveCustomLevel({ ...CUSTOM_LEVEL_A, id: 'custom-export-a', name: '导出覆盖原' }, 'import', 'import');
+
+    const badForExport = { ...CUSTOM_LEVEL_B };
+    badForExport.orders = [{ id: 'O-BAD-EXP', shelfId: 'S-NOT-REAL', deadline: 80, items: ['z'] }];
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 5,
+        levels: [
+            { id: 'custom-batch-a', levelData: { ...CUSTOM_LEVEL_A, name: '导出覆盖' }, highScore: 777, completed: true },
+            { id: 'custom-export-new', levelData: { ...CUSTOM_LEVEL_B, id: 'custom-export-new', name: '导出新增' }, highScore: 333, completed: false },
+            { id: 'custom-export-a', levelData: { ...CUSTOM_LEVEL_A, id: 'custom-export-a', name: '导出另存原' }, highScore: 111 },
+            { id: 'level-2', levelData: { id: 'level-2', name: '导出内置冲突' }, highScore: 222 },
+            { id: 'custom-bad-export', levelData: badForExport, highScore: 9999 }
+        ]
+    };
+
+    const decisions = [
+        { action: 'overwrite' },
+        { action: 'import' },
+        { action: 'save_as_new' },
+        { action: 'skip' },
+        { action: 'import' }
+    ];
+
+    const restoreResult = Storage.executeBatchRestore(backupData, decisions);
+    assert(restoreResult.success === true, '恢复应成功');
+
+    const exportResult = Storage.exportBatchRestoreRecordAsJson();
+    assert(exportResult.success === true, '导出应成功');
+    assert(typeof exportResult.json === 'string', '导出结果应是JSON字符串');
+
+    console.log('   💾 模拟将导出JSON写入磁盘...');
+    const tempFilePath = path.join(__dirname, '..', 'test-results', 'temp-export-check.json');
+    try { fs.mkdirSync(path.dirname(tempFilePath), { recursive: true }); } catch (e) {}
+    fs.writeFileSync(tempFilePath, exportResult.json, 'utf8');
+
+    console.log('   📤 从磁盘重新读回导出的JSON文件...');
+    const readBackStr = fs.readFileSync(tempFilePath, 'utf8');
+    const reParsed = JSON.parse(readBackStr);
+
+    const origRecord = Storage.getLastBatchRestoreInfo();
+
+    console.log('   🔍 逐项对比导出字段...');
+
+    assert(reParsed.exportType === 'batch_restore_report', 'exportType正确');
+    assert(typeof reParsed.exportedAt === 'number', 'exportedAt是时间戳数字');
+    assert(reParsed.record.recordId === restoreResult.recordId, 'recordId匹配');
+    assert(reParsed.record.undoable === origRecord.undoable, 'undoable标记匹配');
+    assert(reParsed.record.undone === origRecord.undone, 'undone标记匹配');
+    assert(Object.keys(reParsed.record.decisions).length === Object.keys(origRecord.decisions || {}).length,
+        'decisions条目数匹配');
+    assert(reParsed.record.decisions[0].action === 'overwrite', '第0条决策overwrite正确');
+    assert(reParsed.record.decisions[2].action === 'save_as_new', '第2条决策save_as_new正确');
+
+    console.log('     ✅ 头部字段（exportType/exportedAt/record/undoable/decisions）一致');
+
+    assert(reParsed.counts.total === origRecord.counts.total, 'counts.total匹配');
+    assert(reParsed.counts.imported === origRecord.counts.imported, 'counts.imported匹配');
+    assert(reParsed.counts.new === origRecord.counts.new, 'counts.new匹配');
+    assert(reParsed.counts.overwrite === origRecord.counts.overwrite, 'counts.overwrite匹配');
+    assert(reParsed.counts.saveAsNew === origRecord.counts.saveAsNew, 'counts.saveAsNew匹配');
+    assert(reParsed.counts.skipped === origRecord.counts.skipped, 'counts.skipped匹配');
+    assert(reParsed.counts.builtinConflict === origRecord.counts.builtinConflict, 'counts.builtinConflict匹配');
+    assert(reParsed.counts.badEntries === origRecord.counts.badEntries, 'counts.badEntries匹配');
+    assert(reParsed.counts.failed === origRecord.counts.failed, 'counts.failed匹配');
+
+    console.log('     ✅ counts统计9个字段全部一致');
+
+    const catNames = ['new', 'overwrite', 'saveAsNew', 'skipped', 'builtinConflict', 'badEntries', 'failed'];
+    let totalCatItems = 0;
+    catNames.forEach(cat => {
+        const origCount = (origRecord.detailed[cat] || []).length;
+        const expCount = (reParsed.categories[cat] || []).length;
+        assert(expCount === origCount, `categories.${cat} 条目数匹配 (${expCount})`);
+        totalCatItems += expCount;
+
+        if (origCount > 0) {
+            for (let i = 0; i < origCount; i++) {
+                const origItem = origRecord.detailed[cat][i];
+                const expItem = reParsed.categories[cat][i];
+                assert(expItem.id === origItem.id, `${cat}[${i}].id匹配: ${expItem.id}`);
+                assert(expItem.name === origItem.name, `${cat}[${i}].name匹配`);
+                assert(expItem.reason === origItem.reason, `${cat}[${i}].reason匹配`);
+                assert(expItem.decision === origItem.decision, `${cat}[${i}].decision匹配`);
+                assert(expItem.conflictType === origItem.conflictType, `${cat}[${i}].conflictType匹配`);
+
+                if (cat === 'overwrite') {
+                    assert(expItem.originalName === origItem.originalName, `${cat}[${i}].originalName匹配`);
+                }
+                if (cat === 'saveAsNew') {
+                    assert(expItem.originalId === origItem.originalId, `${cat}[${i}].originalId匹配`);
+                }
+                if (cat === 'new' || cat === 'overwrite' || cat === 'saveAsNew') {
+                    assert(expItem.highScore === origItem.highScore, `${cat}[${i}].highScore匹配`);
+                    assert(expItem.completed === origItem.completed, `${cat}[${i}].completed匹配`);
+                }
+            }
+        }
+    });
+
+    console.log(`     ✅ categories 7个分类共 ${totalCatItems} 条记录全部逐项字段一致`);
+
+    const saveAsEntry = reParsed.categories.saveAsNew.find(x => x.originalId === 'custom-export-a');
+    assert(!!saveAsEntry, 'ID冲突另存为的条目在导出中存在');
+    assert(saveAsEntry.conflictType === 'id_conflict', 'ID冲突另存为conflictType正确');
+    assert(saveAsEntry.name.includes('副本'), '另存为名称带副本标记');
+
+    const builtinEntry = reParsed.categories.builtinConflict[0];
+    assert(builtinEntry.id === 'level-2', '内置冲突条目ID正确');
+    assert(builtinEntry.decision === 'skip', '内置冲突用户决策skip导出正确');
+    assert(builtinEntry.reason.includes('内置'), '内置冲突原因包含内置');
+
+    const badEntry = reParsed.categories.skipped.find(x => x.id === 'custom-bad-export');
+    assert(!!badEntry, '坏条目在导出skipped分类中存在');
+    assert(badEntry.conflictType === 'validation_error', '坏条目conflictType为validation_error');
+    assert(badEntry.reason.includes('S-NOT-REAL'), '坏条目原因包含具体坏货架ID');
+
+    console.log('     ✅ 冲突分支细节（ID冲突另存为/内置冲突/坏条目校验拦截）导出内容正确');
+
+    try { fs.unlinkSync(tempFilePath); } catch (e) {}
+
+    console.log('   ✅ 导出JSON→落盘→读回→逐项对比：头部/9个counts/7个分类/所有字段/冲突细节 完全一致');
+});
+
+test('56. 撤销联动深度回归 - 撤销后详情/导出/刷新/再撤销全链路验证', () => {
+    clearAllCustomLevels();
+    Storage.clearLastBatchRestoreInfo();
+
+    Storage.saveCustomLevel(CUSTOM_LEVEL_A, 'import', 'import');
+    Storage.saveCustomLevel(CUSTOM_LEVEL_B, 'import', 'import');
+
+    const progressOrig = Storage.loadProgress();
+    progressOrig.highScores['custom-batch-a'] = 50;
+    Storage.saveProgress(progressOrig);
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 4,
+        levels: [
+            { id: 'custom-batch-a', levelData: { ...CUSTOM_LEVEL_A, name: '联动覆盖', difficulty: 3 }, highScore: 9000, completed: true },
+            { id: 'custom-link-new1', levelData: { ...CUSTOM_LEVEL_A, id: 'custom-link-new1', name: '联动新增1' }, highScore: 111 },
+            { id: 'custom-link-new2', levelData: { ...CUSTOM_LEVEL_B, id: 'custom-link-new2', name: '联动新增2' }, highScore: 222, completed: true },
+            { id: 'custom-link-saveas', levelData: { ...CUSTOM_LEVEL_A, id: 'custom-link-saveas', name: '联动另存原' }, highScore: 333 }
+        ]
+    };
+
+    const decisions = [
+        { action: 'overwrite' },
+        { action: 'import' },
+        { action: 'import' },
+        { action: 'save_as_new' }
+    ];
+
+    const restoreResult = Storage.executeBatchRestore(backupData, decisions);
+    assert(restoreResult.success === true, '恢复应成功');
+    const recordId = restoreResult.recordId;
+
+    const saveAsId = restoreResult.detailed.saveAsNew[0].id;
+    const origOverwriteName = restoreResult.detailed.overwrite[0].originalName;
+
+    console.log('   撤销前检查...');
+    let rec = Storage.getBatchRestoreRecord(recordId);
+    assert(rec.counts.imported === 4, '撤销前imported=4');
+    assert(rec.counts.new === 2, '撤销前new=2');
+    assert(rec.counts.overwrite === 1, '撤销前overwrite=1');
+    assert(rec.counts.saveAsNew === 1, '撤销前saveAsNew=1');
+    assert(rec.detailed.new.length === 2, '撤销前detailed.new有2条');
+    assert(rec.detailed.new[0].name === '联动新增1', '撤销前新增1名称正确');
+    assert(rec.detailed.overwrite[0].name === '联动覆盖', '撤销前覆盖名称正确');
+    assert(rec.detailed.saveAsNew[0].originalName === '联动另存原', '撤销前另存原名正确');
+    assert(rec.undoable === true, '撤销前undoable=true');
+    assert(rec.undone === false, '撤销前undone=false');
+
+    let lv = Storage.loadCustomLevels();
+    assert(lv['custom-batch-a'].name === '联动覆盖', '撤销前覆盖名称生效');
+    assert(lv['custom-batch-a'].difficulty === 3, '撤销前覆盖难度生效');
+    assert(!!lv['custom-link-new1'], '撤销前新增1存在');
+    assert(!!lv['custom-link-new2'], '撤销前新增2存在');
+    assert(!!lv[saveAsId], '撤销前另存副本存在');
+
+    let pg = Storage.loadProgress();
+    assert(pg.highScores['custom-batch-a'] === 9000, '撤销前最高分覆盖生效');
+    assert(pg.highScores['custom-link-new1'] === 111, '撤销前新增1最高分');
+    assert(pg.highScores['custom-link-new2'] === 222, '撤销前新增2最高分');
+    assert(pg.completedLevels.includes('custom-batch-a'), '撤销前完成状态覆盖');
+    assert(pg.completedLevels.includes('custom-link-new2'), '撤销前新增2完成状态');
+
+    console.log('   🚨 执行撤销批量恢复...');
+    const undoResult = Storage.undoBatchRestore();
+    assert(undoResult.success === true, '撤销应成功');
+    assert(undoResult.recordId === recordId, '撤销返回的recordId匹配');
+
+    console.log('   撤销后关卡数据回退检查...');
+    lv = Storage.loadCustomLevels();
+    assert(lv['custom-batch-a'].name === origOverwriteName, '撤销后覆盖关卡名称回退');
+    assert(lv['custom-batch-a'].difficulty === 1, '撤销后覆盖关卡难度回退');
+    assert(!lv['custom-link-new1'], '撤销后新增1移除');
+    assert(!lv['custom-link-new2'], '撤销后新增2移除');
+    assert(!lv[saveAsId], '撤销后另存副本移除');
+    assert(Object.keys(lv).length === 2, '撤销后仅剩最初2个自定义关卡');
+
+    pg = Storage.loadProgress();
+    assert(pg.highScores['custom-batch-a'] === 50, '撤销后最高分回退到原值');
+    assert(!pg.highScores['custom-link-new1'], '撤销后新增1最高分清除');
+    assert(!pg.highScores['custom-link-new2'], '撤销后新增2最高分清除');
+
+    console.log('   撤销后记录统计回退检查...');
+    rec = Storage.getBatchRestoreRecord(recordId);
+    assert(rec.undoable === false, '撤销后undoable=false');
+    assert(rec.undone === true, '撤销后undone=true');
+    assert(typeof rec.undoneAt === 'number', '撤销后有undoneAt时间戳');
+    assert(rec.counts.imported === 0, '撤销后counts.imported回退为0');
+    assert(rec.counts.new === 0, '撤销后counts.new回退为0');
+    assert(rec.counts.overwrite === 0, '撤销后counts.overwrite回退为0');
+    assert(rec.counts.saveAsNew === 0, '撤销后counts.saveAsNew回退为0');
+    assert(rec.counts.skipped === 0, '撤销后counts.skipped仍为0（不变）');
+    assert(rec.detailed.new.length === 0, '撤销后detailed.new清空');
+    assert(rec.detailed.overwrite.length === 0, '撤销后detailed.overwrite清空');
+    assert(rec.detailed.saveAsNew.length === 0, '撤销后detailed.saveAsNew清空');
+    assert(rec.detailed._originalDetailed, '撤销后detailed._originalDetailed备份存在');
+    assert(rec.detailed._originalDetailed.new.length === 2, '_originalDetailed.new保留原始2条');
+    assert(rec.detailed._originalDetailed.overwrite[0].name === '联动覆盖', '_originalDetailed保留覆盖前的详情');
+    assert(rec.counts._originalCounts, '撤销后counts._originalCounts备份存在');
+    assert(rec.counts._originalCounts.imported === 4, '_originalCounts.imported保留原始4');
+    assert(rec.summary._originalSummary, '撤销后summary._originalSummary备份存在');
+
+    console.log('   撤销后可撤销提示状态检查...');
+    const lastInfo = Storage.getLastBatchRestoreInfo();
+    assert(lastInfo.undoable === false, 'getLastBatchRestoreInfo也返回undoable=false');
+    assert(lastInfo.undone === true, 'getLastBatchRestoreInfo也返回undone=true');
+
+    const snap = Storage.getBatchRestoreUndoSnapshot();
+    assert(!snap, '撤销后BATCH_RESTORE_SNAPSHOT已清除，不能再次撤销');
+
+    console.log('   📟 撤销后模拟刷新（验证状态持久化）...');
+    const serialized = JSON.parse(JSON.stringify(context.localStorage.data));
+    context.localStorage.data = {};
+    Object.keys(serialized).forEach(k => { context.localStorage.data[k] = serialized[k]; });
+
+    rec = Storage.getBatchRestoreRecord(recordId);
+    assert(rec.undone === true, '刷新后undone标记仍为true');
+    assert(rec.undoable === false, '刷新后undoable标记仍为false');
+    assert(rec.counts.imported === 0, '刷新后counts.imported仍为0');
+    assert(rec.detailed._originalDetailed.new.length === 2, '刷新后_originalDetailed保留');
+
+    lv = Storage.loadCustomLevels();
+    assert(!lv['custom-link-new1'], '刷新后新增关卡仍未回来（确实撤销了）');
+    assert(lv['custom-batch-a'].name === origOverwriteName, '刷新后覆盖关卡名称仍保持已回退');
+
+    console.log('   🚫 尝试再次撤销（应失败）...');
+    const undoAgain = Storage.undoBatchRestore();
+    assert(undoAgain.success === false, '无快照时再次撤销应失败');
+    assert(undoAgain.reason === 'no_undo_snapshot', '失败原因为no_undo_snapshot');
+
+    console.log('   撤销后导出JSON验证（状态也应同步回退）...');
+    const exportAfterUndo = Storage.exportBatchRestoreRecordAsJson(recordId);
+    assert(exportAfterUndo.success === true, '撤销后导出应仍可成功');
+    const expData = exportAfterUndo.data;
+    assert(expData.record.undoable === false, '导出record.undoable同步为false');
+    assert(expData.record.undone === true, '导出record.undone同步为true');
+    assert(expData.counts.imported === 0, '导出counts.imported同步为0');
+    assert(expData.counts.new === 0, '导出counts.new同步为0');
+    assert(expData.counts.overwrite === 0, '导出counts.overwrite同步为0');
+    assert(expData.counts.saveAsNew === 0, '导出counts.saveAsNew同步为0');
+    assert(expData.categories.new.length === 0, '导出categories.new同步为空');
+    assert(expData.categories.overwrite.length === 0, '导出categories.overwrite同步为空');
+    assert(expData.categories.saveAsNew.length === 0, '导出categories.saveAsNew同步为空');
+
+    console.log('   ✅ 撤销联动深度验证全部通过：');
+    console.log('      - 关卡数据（名称/难度/新增/副本）全部回退');
+    console.log('      - 进度数据（最高分/完成状态）全部回退');
+    console.log('      - 记录统计（counts 9字段）全部回退');
+    console.log('      - 分类名单（detailed 7分类）新增/覆盖/另存清空，跳过/内置/坏条目不变');
+    console.log('      - 原始数据备份（_originalDetailed/_originalCounts/_originalSummary）保留');
+    console.log('      - 可撤销标记（undoable→false, undone→true）同步');
+    console.log('      - 撤销快照清除，再次撤销拦截');
+    console.log('      - 模拟刷新后所有状态仍正确（持久化生效）');
+    console.log('      - 撤销后导出JSON的状态/统计/分类也同步回退');
+});
+
 console.log('\n=== 测试总结 ===');
 const passed = testResults.filter(r => r.passed).length;
 const total = testResults.length;
@@ -2236,4 +2717,8 @@ if (passed < total) {
     console.log('   ✅ 记录导出JSON：结构完整+冲突决策与用户选择一致');
     console.log('   ✅ 撤销联动：记录数量/关卡名单/可撤销标记全部同步回退');
     console.log('   ✅ 冲突分支一致性：覆盖/另存/内置/坏条目 记录+导出+实际三者一致');
+    console.log('   ✅ 真实页面入口DOM：按钮/弹窗容器/7个Tab/脚本加载顺序/CSS引入 全部可解析');
+    console.log('   ✅ 跨重启持久化：3次模拟刷新后记录ID/统计/分类/快照/历史 全部完整保留');
+    console.log('   ✅ 导出JSON往返：落盘→读回→头部/9个counts/7分类/冲突细节 完全一致');
+    console.log('   ✅ 撤销联动深度：关卡/进度回退+记录统计归零+原始备份保留+刷新持久化+再次撤销拦截+导出同步回退');
 }

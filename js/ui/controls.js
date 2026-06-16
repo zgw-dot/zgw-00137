@@ -1490,7 +1490,7 @@ const UIController = (function() {
                 if (tab === 'overwrite' && item.originalName) {
                     extra = `<div class="detail-item-extra">原名称: ${item.originalName}</div>`;
                 }
-                if ((tab === 'saveAsNew') {
+                if (tab === 'saveAsNew') {
                     extra = `<div class="detail-item-extra">原ID: ${item.originalId || item.id}${item.originalName ? ` | 原名: ${item.originalName}` : ''}</div>`;
                 }
                 if (item.highScore > 0) {
