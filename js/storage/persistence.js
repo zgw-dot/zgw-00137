@@ -4,8 +4,12 @@ const Storage = (function() {
         SETTINGS: 'warehouse_game_settings',
         LAST_REPLAY: 'warehouse_game_last_replay',
         CUSTOM_LEVELS: 'warehouse_game_custom_levels',
-        OPERATION_HISTORY: 'warehouse_game_operation_history'
+        OPERATION_HISTORY: 'warehouse_game_operation_history',
+        LAST_OPERATION: 'warehouse_game_last_operation',
+        UNDO_SNAPSHOT: 'warehouse_game_undo_snapshot'
     };
+
+    const BUILTIN_LEVEL_IDS = ['level-1', 'level-2'];
 
     const DEFAULT_SETTINGS = {
         gameSpeed: 1.0,
@@ -13,6 +17,18 @@ const Storage = (function() {
         autoPause: true,
         showGrid: true
     };
+
+    function registerBuiltinIds(ids) {
+        ids.forEach(id => {
+            if (!BUILTIN_LEVEL_IDS.includes(id)) {
+                BUILTIN_LEVEL_IDS.push(id);
+            }
+        });
+    }
+
+    function isBuiltinLevelId(levelId) {
+        return BUILTIN_LEVEL_IDS.includes(levelId);
+    }
 
     function saveProgress(progress) {
         try {
@@ -117,11 +133,29 @@ const Storage = (function() {
         }
     }
 
-    function saveCustomLevel(level) {
+    function saveCustomLevel(level, sourceType, operationType) {
         try {
             const levels = loadCustomLevels();
-            levels[level.id] = level;
+            const now = Date.now();
+            const existing = levels[level.id];
+            levels[level.id] = {
+                ...level,
+                _meta: {
+                    sourceType: sourceType || (existing?._meta?.sourceType) || 'import',
+                    importTime: existing?._meta?.importTime || now,
+                    lastModifiedTime: now,
+                    lastOperation: operationType || 'import',
+                    lastOperationTime: now
+                }
+            };
             localStorage.setItem(KEYS.CUSTOM_LEVELS, JSON.stringify(levels));
+            saveLastOperation({
+                type: operationType || 'import',
+                levelId: level.id,
+                levelName: level.name,
+                timestamp: now,
+                success: true
+            });
             return true;
         } catch (e) {
             console.error('Failed to save custom level:', e);
@@ -142,12 +176,93 @@ const Storage = (function() {
     function deleteCustomLevel(levelId) {
         try {
             const levels = loadCustomLevels();
+            const deletedLevel = levels[levelId];
+            if (!deletedLevel) return false;
+
+            localStorage.setItem(KEYS.UNDO_SNAPSHOT, JSON.stringify({
+                levelId: levelId,
+                levelData: deletedLevel,
+                deletedAt: Date.now()
+            }));
+
             delete levels[levelId];
             localStorage.setItem(KEYS.CUSTOM_LEVELS, JSON.stringify(levels));
+
+            saveLastOperation({
+                type: 'delete',
+                levelId: levelId,
+                levelName: deletedLevel.name,
+                timestamp: Date.now(),
+                success: true,
+                undoable: true
+            });
+
             return true;
         } catch (e) {
             console.error('Failed to delete custom level:', e);
             return false;
+        }
+    }
+
+    function undoDelete() {
+        try {
+            const snapshotData = localStorage.getItem(KEYS.UNDO_SNAPSHOT);
+            if (!snapshotData) return { success: false, reason: 'no_undo_snapshot' };
+
+            const snapshot = JSON.parse(snapshotData);
+            if (!snapshot.levelData) return { success: false, reason: 'invalid_snapshot' };
+
+            const levels = loadCustomLevels();
+            if (levels[snapshot.levelId]) {
+                return { success: false, reason: 'level_id_exists' };
+            }
+
+            levels[snapshot.levelId] = snapshot.levelData;
+            localStorage.setItem(KEYS.CUSTOM_LEVELS, JSON.stringify(levels));
+            localStorage.removeItem(KEYS.UNDO_SNAPSHOT);
+
+            saveLastOperation({
+                type: 'undo_delete',
+                levelId: snapshot.levelId,
+                levelName: snapshot.levelData.name,
+                timestamp: Date.now(),
+                success: true
+            });
+
+            return { success: true, levelId: snapshot.levelId, levelName: snapshot.levelData.name };
+        } catch (e) {
+            console.error('Failed to undo delete:', e);
+            return { success: false, reason: 'error' };
+        }
+    }
+
+    function getUndoSnapshot() {
+        try {
+            const data = localStorage.getItem(KEYS.UNDO_SNAPSHOT);
+            return data ? JSON.parse(data) : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function clearUndoSnapshot() {
+        localStorage.removeItem(KEYS.UNDO_SNAPSHOT);
+    }
+
+    function saveLastOperation(operation) {
+        try {
+            localStorage.setItem(KEYS.LAST_OPERATION, JSON.stringify(operation));
+        } catch (e) {
+            console.error('Failed to save last operation:', e);
+        }
+    }
+
+    function loadLastOperation() {
+        try {
+            const data = localStorage.getItem(KEYS.LAST_OPERATION);
+            return data ? JSON.parse(data) : null;
+        } catch (e) {
+            return null;
         }
     }
 
@@ -172,7 +287,15 @@ const Storage = (function() {
         saveCustomLevel,
         loadCustomLevels,
         deleteCustomLevel,
+        undoDelete,
+        getUndoSnapshot,
+        clearUndoSnapshot,
+        saveLastOperation,
+        loadLastOperation,
         clearAll,
-        getDefaultSettings
+        getDefaultSettings,
+        registerBuiltinIds,
+        isBuiltinLevelId,
+        BUILTIN_LEVEL_IDS
     };
 })();

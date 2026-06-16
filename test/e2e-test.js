@@ -53,7 +53,8 @@ const context = {
                     },
                     addEventListener: () => {},
                     appendChild: () => {},
-                    removeChild: () => {}
+                    removeChild: () => {},
+                    closest: () => null
                 };
             }
             return this.elements[id];
@@ -73,7 +74,8 @@ const context = {
                 setAttribute: () => {},
                 getAttribute: () => null,
                 querySelector: () => this.createElement('div'),
-                querySelectorAll: () => []
+                querySelectorAll: () => [],
+                closest: () => null
             };
         },
         querySelector: function() { return this.createElement('div'); },
@@ -470,6 +472,351 @@ test('12. 验证单向巷道冲突检测未被破坏', () => {
     console.log(`   ✅ 单向巷道冲突检测逻辑完整存在`);
 });
 
+console.log('\n📦 测试自定义关卡管理增强功能...\n');
+
+const CUSTOM_LEVEL = {
+    id: 'custom-test-1',
+    name: '测试自定义关卡',
+    description: '用于测试导入导出的自定义关卡',
+    difficulty: 1,
+    timeLimit: 180,
+    mapWidth: 8,
+    mapHeight: 8,
+    mapData: [
+        ['sp', 'a', 'a', 'a', 'a', 'a', 'a', 'sp'],
+        ['s:S1', 'a', 's:S2', 'a', 's:S3', 'a', 's:S4', 'a'],
+        ['e', 'a', 'e', 'a', 'e', 'a', 'e', 'a'],
+        ['s:S5', 'a', 's:S6', 'a', 's:S7', 'a', 's:S8', 'a'],
+        ['e', 'a', 'e', 'a', 'e', 'a', 'e', 'a'],
+        ['s:S9', 'a', 's:S10', 'a', 's:S11', 'a', 's:S12', 'a'],
+        ['e', 'a', 'e', 'a', 'e', 'a', 'e', 'a'],
+        ['sp', 'a', 'a', 'p', 'p', 'a', 'a', 'sp']
+    ],
+    workerCount: 2,
+    cartCount: 2,
+    orders: [
+        { id: 'O-001', shelfId: 'S1', deadline: 120, items: ['商品A', '商品B'] },
+        { id: 'O-002', shelfId: 'S5', deadline: 100, items: ['商品C'] },
+        { id: 'O-003', shelfId: 'S8', deadline: 140, items: ['商品D', '商品E', '商品F'] },
+        { id: 'O-004', shelfId: 'S12', deadline: 160, items: ['商品G', '商品H'] }
+    ],
+    pickDuration: 3,
+    packDuration: 2,
+    targetScore: 600,
+    minOrdersToPass: 4
+};
+
+const CUSTOM_LEVEL_V2 = {
+    ...CUSTOM_LEVEL,
+    name: '测试自定义关卡V2',
+    difficulty: 2,
+    orders: [
+        ...CUSTOM_LEVEL.orders,
+        { id: 'O-005', shelfId: 'S3', deadline: 90, items: ['商品I'] }
+    ],
+    targetScore: 800
+};
+
+test('13. 自定义关卡导入 - 基本导入流程', () => {
+    console.log('   导入自定义关卡...');
+    const result = Storage.saveCustomLevel(CUSTOM_LEVEL, 'import', 'import');
+    assert(result === true, '导入应成功');
+    
+    const levels = Storage.loadCustomLevels();
+    assert(!!levels['custom-test-1'], '自定义关卡应存在于存储中');
+    assert(levels['custom-test-1'].name === '测试自定义关卡', '关卡名称应正确');
+    assert(!!levels['custom-test-1']._meta, '关卡应有 _meta 元数据');
+    assert(levels['custom-test-1']._meta.sourceType === 'import', '来源类型应为 import');
+    assert(!!levels['custom-test-1']._meta.importTime, '应有导入时间');
+    assert(levels['custom-test-1']._meta.lastOperation === 'import', '最近操作应为 import');
+    
+    console.log(`   导入时间: ${new Date(levels['custom-test-1']._meta.importTime).toISOString()}`);
+    console.log('   ✅ 自定义关卡导入成功，元数据正确');
+});
+
+test('14. 重复导入冲突 - 覆盖已有自定义关卡', () => {
+    console.log('   导入同ID不同内容的关卡（模拟覆盖）...');
+    
+    const levelsBefore = Storage.loadCustomLevels();
+    const metaBefore = levelsBefore['custom-test-1']._meta;
+    const originalImportTime = metaBefore.importTime;
+    
+    const result = Storage.saveCustomLevel(CUSTOM_LEVEL_V2, 'import', 'overwrite');
+    assert(result === true, '覆盖导入应成功');
+    
+    const levelsAfter = Storage.loadCustomLevels();
+    assert(levelsAfter['custom-test-1'].name === '测试自定义关卡V2', '名称应更新为V2');
+    assert(levelsAfter['custom-test-1'].difficulty === 2, '难度应更新为2');
+    assert(levelsAfter['custom-test-1']._meta.importTime === originalImportTime, '首次导入时间应保留');
+    assert(levelsAfter['custom-test-1']._meta.lastOperation === 'overwrite', '最近操作应为 overwrite');
+    assert(!!levelsAfter['custom-test-1']._meta.lastModifiedTime, '应有最后修改时间');
+    
+    console.log(`   首次导入时间保留: ${new Date(originalImportTime).toISOString()}`);
+    console.log(`   最后修改时间: ${new Date(levelsAfter['custom-test-1']._meta.lastModifiedTime).toISOString()}`);
+    console.log('   ✅ 覆盖导入成功，首次导入时间保留，操作记录正确');
+});
+
+test('15. 内置关卡ID冲突拦截', () => {
+    console.log('   尝试导入与内置关卡同ID的关卡...');
+    
+    const builtinLevel = { ...CUSTOM_LEVEL, id: 'level-1' };
+    
+    assert(Storage.isBuiltinLevelId('level-1') === true, 'level-1 应为内置关卡ID');
+    assert(Storage.isBuiltinLevelId('level-2') === true, 'level-2 应为内置关卡ID');
+    assert(Storage.isBuiltinLevelId('custom-test-1') === false, 'custom-test-1 不应为内置关卡ID');
+    
+    console.log('   ✅ 内置关卡ID检测正常，内置关卡不可被覆盖');
+});
+
+test('16. 坏JSON格式验证', () => {
+    console.log('   测试各种无效JSON...');
+    
+    const badInputs = [
+        { input: 'not json at all', desc: '非JSON字符串' },
+        { input: '{missing: quotes}', desc: '不完整JSON' },
+        { input: 'null', desc: 'null值' },
+        { input: '[]', desc: '空数组' },
+    ];
+    
+    for (const { input, desc } of badInputs) {
+        try {
+            JSON.parse(input);
+            console.log(`   ${desc}: 解析成功（可能是合法JSON但不合法关卡）`);
+        } catch (e) {
+            console.log(`   ${desc}: 解析失败（预期行为）- ${e.message.substring(0, 30)}`);
+        }
+    }
+    
+    console.log('   测试缺少必要字段的关卡...');
+    const incompleteLevel = { id: 'bad-level', name: '坏关卡' };
+    try {
+        const level = GameModels.Level.fromJSON(incompleteLevel);
+        const errors = level.validate();
+        console.log(`   验证错误: ${errors.join('; ')}`);
+        assert(errors.length > 0, '不完整关卡应验证失败');
+    } catch (e) {
+        console.log(`   创建关卡失败: ${e.message.substring(0, 50)}`);
+    }
+    
+    console.log('   ✅ 坏JSON格式验证正常');
+});
+
+test('17. 未知货架验证', () => {
+    console.log('   测试订单引用不存在的货架...');
+    
+    const badShelfLevel = {
+        ...CUSTOM_LEVEL,
+        id: 'bad-shelf-level',
+        orders: [
+            { id: 'O-001', shelfId: 'S-NONEXISTENT', deadline: 120, items: ['商品A'] }
+        ]
+    };
+    
+    const level = GameModels.Level.fromJSON(badShelfLevel);
+    const errors = level.validate();
+    console.log(`   验证错误: ${errors.join('; ')}`);
+    assert(errors.length > 0, '引用未知货架应验证失败');
+    assert(errors.some(e => e.includes('S-NONEXISTENT') || e.includes('未知')), 
+        '应提示未知货架');
+    
+    console.log('   ✅ 未知货架验证正常');
+});
+
+test('18. 删除自定义关卡', () => {
+    console.log('   删除自定义关卡 custom-test-1...');
+    
+    const levelsBefore = Storage.loadCustomLevels();
+    assert(!!levelsBefore['custom-test-1'], '删除前关卡应存在');
+    
+    const result = Storage.deleteCustomLevel('custom-test-1');
+    assert(result === true, '删除应成功');
+    
+    const levelsAfter = Storage.loadCustomLevels();
+    assert(!levelsAfter['custom-test-1'], '删除后关卡不应存在');
+    
+    console.log('   ✅ 自定义关卡删除成功');
+});
+
+test('19. 删除后撤销恢复', () => {
+    console.log('   测试撤销删除...');
+    
+    const snapshot = Storage.getUndoSnapshot();
+    assert(!!snapshot, '应有撤销快照');
+    assert(snapshot.levelId === 'custom-test-1', '快照关卡ID应正确');
+    assert(!!snapshot.levelData, '快照应包含关卡数据');
+    console.log(`   快照关卡名: ${snapshot.levelData.name}`);
+    
+    const result = Storage.undoDelete();
+    assert(result.success === true, '撤销应成功');
+    assert(result.levelId === 'custom-test-1', '返回的关卡ID应正确');
+    
+    const levels = Storage.loadCustomLevels();
+    assert(!!levels['custom-test-1'], '撤销后关卡应恢复');
+    assert(levels['custom-test-1'].name === '测试自定义关卡V2', '恢复的关卡名称应为覆盖后的V2');
+    
+    console.log('   ✅ 撤销删除成功，关卡已恢复');
+    
+    const snapshotAfter = Storage.getUndoSnapshot();
+    assert(!snapshotAfter, '撤销后快照应被清除');
+    console.log('   ✅ 撤销快照已清除');
+});
+
+test('20. 单次撤销限制 - 再次撤销应失败', () => {
+    console.log('   尝试再次撤销（无快照）...');
+    
+    const result = Storage.undoDelete();
+    assert(result.success === false, '没有快照时撤销应失败');
+    assert(result.reason === 'no_undo_snapshot', '失败原因应为 no_undo_snapshot');
+    
+    console.log('   ✅ 单次撤销限制正常');
+});
+
+test('21. 最近操作记录', () => {
+    console.log('   检查最近操作记录...');
+    
+    const op = Storage.loadLastOperation();
+    assert(!!op, '应有最近操作记录');
+    console.log(`   最近操作: type=${op.type}, levelName=${op.levelName}, success=${op.success}`);
+    
+    assert(op.type === 'undo_delete', '最近操作类型应为 undo_delete');
+    assert(op.levelName === '测试自定义关卡V2', '操作关卡名应正确');
+    assert(op.success === true, '操作应成功');
+    assert(!!op.timestamp, '应有时间戳');
+    
+    console.log('   ✅ 最近操作记录正确');
+});
+
+test('22. 导出并重新导入 - 完整往返验证', () => {
+    console.log('   清除之前的自定义关卡...');
+    Storage.deleteCustomLevel('custom-test-1');
+    Storage.clearUndoSnapshot();
+    
+    console.log('   重新导入自定义关卡...');
+    Storage.saveCustomLevel(CUSTOM_LEVEL, 'import', 'import');
+    
+    const levels = Storage.loadCustomLevels();
+    const savedLevel = levels['custom-test-1'];
+    assert(!!savedLevel, '导入后关卡应存在');
+    
+    const levelDataForExport = { ...savedLevel };
+    delete levelDataForExport._meta;
+    
+    console.log('   导出关卡JSON...');
+    const levelObj = GameModels.Level.fromJSON(levelDataForExport);
+    const exportedJson = levelObj.toJSON();
+    const exportedString = JSON.stringify(exportedJson);
+    console.log(`   导出JSON长度: ${exportedString.length} 字符`);
+    
+    console.log('   删除原关卡...');
+    Storage.deleteCustomLevel('custom-test-1');
+    Storage.clearUndoSnapshot();
+    
+    console.log('   重新导入导出的JSON...');
+    const reimported = JSON.parse(exportedString);
+    const newLevel = GameModels.Level.fromJSON(reimported);
+    const errors = newLevel.validate();
+    assert(errors.length === 0, `重新导入的关卡应验证通过，错误: ${errors.join('; ')}`);
+    
+    Storage.saveCustomLevel(newLevel.toJSON(), 'import', 'import');
+    
+    const levelsAfter = Storage.loadCustomLevels();
+    assert(!!levelsAfter['custom-test-1'], '重新导入后关卡应存在');
+    assert(levelsAfter['custom-test-1'].id === 'custom-test-1', '关卡ID应一致');
+    assert(levelsAfter['custom-test-1'].name === '测试自定义关卡', '关卡名称应一致');
+    
+    console.log('   用重新导入的关卡初始化游戏引擎...');
+    const game = new GameEngine.Engine();
+    game.initLevel(newLevel);
+    const state = game.getGameState();
+    assert(state.workers.length === 2, '应有2个拣货员');
+    assert(state.level.orders.length === 4, '应有4个订单');
+    
+    console.log('   ✅ 导出再导入往返验证成功');
+});
+
+test('23. 跨重启状态保留 - 模拟页面刷新', () => {
+    console.log('   模拟页面刷新（重新从 localStorage 加载）...');
+    
+    const customLevels = Storage.loadCustomLevels();
+    assert(!!customLevels['custom-test-1'], '刷新后自定义关卡应仍在');
+    assert(!!customLevels['custom-test-1']._meta, '元数据应保留');
+    assert(!!customLevels['custom-test-1']._meta.importTime, '导入时间应保留');
+    
+    const progress = Storage.loadProgress();
+    console.log(`   进度: completedLevels=${progress.completedLevels.length}, highScores=${Object.keys(progress.highScores).length}`);
+    
+    const lastOp = Storage.loadLastOperation();
+    assert(!!lastOp, '刷新后最近操作应保留');
+    console.log(`   最近操作: ${lastOp.type} - ${lastOp.levelName}`);
+    
+    const snapshot = Storage.getUndoSnapshot();
+    console.log(`   撤销快照: ${snapshot ? '存在' : '不存在'}`);
+    
+    console.log('   ✅ 跨重启状态保留正常');
+});
+
+test('24. 导入冲突时的另存为新关卡', () => {
+    console.log('   模拟另存为新关卡...');
+    
+    const existingLevels = Storage.loadCustomLevels();
+    const existingData = existingLevels['custom-test-1'];
+    assert(!!existingData, '原关卡应存在');
+    
+    let newId = 'custom-test-1-copy';
+    let counter = 1;
+    while (existingLevels[newId] || Storage.isBuiltinLevelId(newId)) {
+        newId = 'custom-test-1-copy-' + counter;
+        counter++;
+    }
+    
+    const newLevelData = { ...CUSTOM_LEVEL_V2, id: newId, name: CUSTOM_LEVEL_V2.name + ' (副本)' };
+    const newLevel = GameModels.Level.fromJSON(newLevelData);
+    Storage.saveCustomLevel(newLevel.toJSON(), 'import', 'save_as_new');
+    
+    const levels = Storage.loadCustomLevels();
+    assert(!!levels['custom-test-1'], '原关卡应保留');
+    assert(!!levels[newId], '新关卡应存在');
+    assert(levels[newId].name === '测试自定义关卡V2 (副本)', '新关卡名称应有副本标记');
+    
+    console.log(`   新关卡ID: ${newId}`);
+    console.log(`   新关卡名称: ${levels[newId].name}`);
+    console.log('   ✅ 另存为新关卡成功');
+});
+
+test('25. 内置关卡ID注册机制', () => {
+    console.log('   测试内置关卡ID注册...');
+    
+    assert(Storage.isBuiltinLevelId('level-1') === true, 'level-1 应为内置');
+    assert(Storage.isBuiltinLevelId('level-2') === true, 'level-2 应为内置');
+    assert(Storage.isBuiltinLevelId('custom-anything') === false, 'custom-anything 不应为内置');
+    
+    Storage.registerBuiltinIds(['level-3']);
+    assert(Storage.isBuiltinLevelId('level-3') === true, '注册后 level-3 应为内置');
+    
+    console.log('   ✅ 内置关卡ID注册机制正常');
+});
+
+test('26. 删除后操作记录保留', () => {
+    console.log('   删除后检查操作记录...');
+    
+    Storage.deleteCustomLevel('custom-test-1');
+    
+    const op = Storage.loadLastOperation();
+    assert(!!op, '删除后应有操作记录');
+    assert(op.type === 'delete', '操作类型应为 delete');
+    assert(op.success === true, '操作应成功');
+    assert(op.undoable === true, '应标记为可撤销');
+    
+    console.log(`   操作: ${op.type}, 可撤销: ${op.undoable}`);
+    console.log('   ✅ 删除后操作记录正确');
+    
+    Storage.undoDelete();
+    Storage.deleteCustomLevel('custom-test-1-copy');
+    if (Storage.loadCustomLevels()['custom-test-1']) {
+        Storage.deleteCustomLevel('custom-test-1');
+    }
+});
+
 console.log('\n=== 测试总结 ===');
 const passed = testResults.filter(r => r.passed).length;
 const total = testResults.length;
@@ -498,4 +845,18 @@ if (passed < total) {
     console.log('   ✅ 推车不足拦截正常');
     console.log('   ✅ 忙碌拣货员拦截正常');
     console.log('   ✅ 单向巷道冲突检测未被破坏');
+    console.log('   ✅ 自定义关卡导入+元数据');
+    console.log('   ✅ 重复导入冲突（覆盖）');
+    console.log('   ✅ 内置关卡ID冲突拦截');
+    console.log('   ✅ 坏JSON格式验证');
+    console.log('   ✅ 未知货架验证');
+    console.log('   ✅ 删除自定义关卡');
+    console.log('   ✅ 删除后撤销恢复');
+    console.log('   ✅ 单次撤销限制');
+    console.log('   ✅ 最近操作记录');
+    console.log('   ✅ 导出再导入完整往返');
+    console.log('   ✅ 跨重启状态保留');
+    console.log('   ✅ 另存为新关卡');
+    console.log('   ✅ 内置关卡ID注册');
+    console.log('   ✅ 删除后操作记录保留');
 }

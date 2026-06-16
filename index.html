@@ -22,6 +22,11 @@
             <div id="main-menu" class="screen active">
                 <div class="menu-content">
                     <h2>选择关卡</h2>
+                    <div id="last-operation-bar" class="last-operation-bar hidden"></div>
+                    <div id="undo-bar" class="undo-bar hidden">
+                        <span id="undo-bar-text"></span>
+                        <button id="btn-undo-delete" class="btn btn-warning btn-small">↩️ 撤销删除</button>
+                    </div>
                     <div id="level-list" class="level-list"></div>
                     <div class="menu-info">
                         <p>🎯 目标：在截止时间内完成所有订单拣货</p>
@@ -193,14 +198,53 @@
                 </div>
             </div>
 
+            <div id="import-conflict-modal" class="modal">
+                <div class="modal-content modal-wide">
+                    <h2>⚠️ 关卡ID冲突</h2>
+                    <div id="import-conflict-builtin" class="conflict-builtin-warning hidden">
+                        <p>🚫 该关卡ID与内置关卡冲突，无法覆盖内置关卡。</p>
+                        <p>如需导入，请修改关卡JSON中的 <code>id</code> 字段后重试。</p>
+                    </div>
+                    <div id="import-conflict-diff" class="conflict-diff hidden">
+                        <p>检测到同ID关卡已存在，以下字段将发生变化：</p>
+                        <table class="diff-table">
+                            <thead>
+                                <tr><th>字段</th><th>当前值</th><th>导入值</th></tr>
+                            </thead>
+                            <tbody id="import-diff-body"></tbody>
+                        </table>
+                    </div>
+                    <div class="conflict-actions" id="import-conflict-actions">
+                        <button id="btn-import-overwrite" class="btn btn-warning">🔄 直接覆盖</button>
+                        <button id="btn-import-save-as-new" class="btn btn-primary">📝 另存为新关卡</button>
+                        <button id="btn-import-cancel-conflict" class="btn btn-secondary">取消</button>
+                    </div>
+                </div>
+            </div>
+
             <div id="export-modal" class="modal">
-                <div class="modal-content">
+                <div class="modal-content modal-wide">
                     <h2>📤 导出关卡</h2>
                     <p>选择要导出的关卡：</p>
                     <select id="export-level-select"></select>
+                    <div id="export-level-meta" class="export-meta-info hidden">
+                        <div class="meta-row"><span class="meta-label">来源类型：</span><span id="export-meta-source"></span></div>
+                        <div class="meta-row"><span class="meta-label">导入时间：</span><span id="export-meta-import-time"></span></div>
+                        <div class="meta-row"><span class="meta-label">最高分：</span><span id="export-meta-high-score"></span></div>
+                    </div>
                     <textarea id="export-textarea" rows="10" readonly></textarea>
                     <button id="btn-copy-export" class="btn btn-primary">📋 复制到剪贴板</button>
                     <button id="btn-close-export" class="btn btn-secondary">关闭</button>
+                </div>
+            </div>
+
+            <div id="delete-confirm-modal" class="modal">
+                <div class="modal-content">
+                    <h2>🗑️ 删除自定义关卡</h2>
+                    <p>确定要删除自定义关卡 "<span id="delete-level-name"></span>" 吗？</p>
+                    <p class="delete-hint">删除后可通过"撤销删除"恢复一次。</p>
+                    <button id="btn-confirm-delete" class="btn btn-danger">🗑️ 确认删除</button>
+                    <button id="btn-cancel-delete" class="btn btn-secondary">取消</button>
                 </div>
             </div>
 
