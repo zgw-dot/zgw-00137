@@ -8,7 +8,8 @@ const Storage = (function() {
         LAST_OPERATION: 'warehouse_game_last_operation',
         UNDO_SNAPSHOT: 'warehouse_game_undo_snapshot',
         BATCH_RESTORE_SNAPSHOT: 'warehouse_game_batch_restore_snapshot',
-        LAST_BATCH_RESTORE: 'warehouse_game_last_batch_restore'
+        LAST_BATCH_RESTORE: 'warehouse_game_last_batch_restore',
+        BATCH_RESTORE_HISTORY: 'warehouse_game_batch_restore_history'
     };
 
     const BACKUP_FORMAT_VERSION = 1;
@@ -446,7 +447,20 @@ const Storage = (function() {
                 skipped: [],
                 failed: [],
                 overwrite: [],
-                saveAsNew: []
+                saveAsNew: [],
+                new: [],
+                builtinConflict: [],
+                badEntries: []
+            };
+
+            const detailedResults = {
+                new: [],
+                overwrite: [],
+                saveAsNew: [],
+                skipped: [],
+                builtinConflict: [],
+                badEntries: [],
+                failed: []
             };
 
             if (!backupData || !Array.isArray(backupData.levels)) {
@@ -457,20 +471,43 @@ const Storage = (function() {
                 const entry = backupData.levels[i];
                 const decision = decisions?.[i] || { action: 'skip' };
 
-                if (!entry || !entry.id || !entry.levelData) {
-                    results.failed.push({
+                if (!entry || !entry.id || !entry.levelData || typeof entry.levelData !== 'object') {
+                    const badItem = {
+                        index: i,
                         id: entry?.id || `#${i}`,
-                        reason: '无效的关卡数据'
+                        name: entry?.levelData?.name || `条目#${i}`,
+                        reason: '无效的关卡数据（缺少id或levelData）',
+                        decision: decision.action,
+                        conflictType: 'bad_entry'
+                    };
+                    results.badEntries.push(badItem);
+                    results.failed.push({
+                        id: badItem.id,
+                        name: badItem.name,
+                        reason: badItem.reason
                     });
+                    detailedResults.badEntries.push(badItem);
+                    detailedResults.failed.push(badItem);
                     continue;
                 }
 
                 if (isBuiltinLevelId(entry.id) && decision.action !== 'save_as_new') {
+                    const builtinItem = {
+                        index: i,
+                        id: entry.id,
+                        name: entry.levelData?.name || entry.id,
+                        reason: '与内置关卡ID冲突，无法导入（选择"另存为副本"可绕过）',
+                        decision: decision.action,
+                        conflictType: 'builtin_conflict'
+                    };
+                    results.builtinConflict.push(builtinItem);
                     results.failed.push({
                         id: entry.id,
                         name: entry.levelData?.name,
-                        reason: '与内置关卡ID冲突，无法导入'
+                        reason: builtinItem.reason
                     });
+                    detailedResults.builtinConflict.push(builtinItem);
+                    detailedResults.failed.push(builtinItem);
                     continue;
                 }
 
@@ -485,21 +522,46 @@ const Storage = (function() {
                 }
 
                 if (semanticErrors && semanticErrors.length > 0) {
+                    const skipItem = {
+                        index: i,
+                        id: entry.id,
+                        name: entry.levelData?.name || entry.id,
+                        reason: '校验失败: ' + semanticErrors.join('; '),
+                        decision: decision.action,
+                        conflictType: 'validation_error'
+                    };
                     results.skipped.push({
                         id: entry.id,
                         name: entry.levelData?.name || entry.id,
-                        reason: '校验失败: ' + semanticErrors.join('; ')
+                        reason: skipItem.reason
                     });
+                    detailedResults.skipped.push(skipItem);
                     continue;
                 }
 
                 switch (decision.action) {
-                    case 'skip':
+                    case 'skip': {
+                        const skipItem = {
+                            index: i,
+                            id: entry.id,
+                            name: entry.levelData?.name || entry.id,
+                            reason: isBuiltinLevelId(entry.id)
+                                ? '与内置关卡ID冲突，用户选择跳过'
+                                : (currentLevels[entry.id]
+                                    ? '同ID关卡已存在，用户选择跳过'
+                                    : '用户选择跳过'),
+                            decision: 'skip',
+                            conflictType: isBuiltinLevelId(entry.id) ? 'builtin_conflict' :
+                                (currentLevels[entry.id] ? 'id_conflict' : 'user_skip')
+                        };
                         results.skipped.push({
                             id: entry.id,
-                            name: entry.levelData?.name
+                            name: entry.levelData?.name,
+                            reason: skipItem.reason
                         });
+                        detailedResults.skipped.push(skipItem);
                         break;
+                    }
 
                     case 'overwrite':
                         try {
@@ -521,21 +583,39 @@ const Storage = (function() {
                                 allOperations[entry.id] = entry.operations;
                             }
 
-                            results.overwrite.push({
+                            const overwriteItem = {
+                                index: i,
                                 id: entry.id,
-                                name: entry.levelData?.name
-                            });
+                                name: entry.levelData?.name || entry.id,
+                                originalName: currentLevels[entry.id]?.name,
+                                highScore: entry.highScore || 0,
+                                completed: entry.completed || false,
+                                reason: '同ID关卡已存在，用户选择覆盖',
+                                decision: 'overwrite',
+                                conflictType: 'id_conflict'
+                            };
+                            results.overwrite.push(overwriteItem);
                             results.imported.push({
                                 id: entry.id,
                                 name: entry.levelData?.name,
                                 action: 'overwrite'
                             });
+                            detailedResults.overwrite.push(overwriteItem);
                         } catch (e) {
+                            const failItem = {
+                                index: i,
+                                id: entry.id,
+                                name: entry.levelData?.name || entry.id,
+                                reason: '覆盖时出错: ' + e.message,
+                                decision: 'overwrite',
+                                conflictType: 'id_conflict'
+                            };
                             results.failed.push({
                                 id: entry.id,
                                 name: entry.levelData?.name,
-                                reason: e.message
+                                reason: failItem.reason
                             });
+                            detailedResults.failed.push(failItem);
                         }
                         break;
 
@@ -568,23 +648,49 @@ const Storage = (function() {
                                 allOperations[newId] = entry.operations;
                             }
 
-                            results.saveAsNew.push({
+                            const hasIdConflict = !isBuiltinLevelId(entry.id) && currentLevels[entry.id];
+                            const saveAsItem = {
+                                index: i,
                                 id: newId,
                                 originalId: entry.id,
-                                name: newLevelData.name
-                            });
+                                name: newLevelData.name,
+                                originalName: hasIdConflict
+                                    ? currentLevels[entry.id].name
+                                    : entry.levelData?.name,
+                                highScore: entry.highScore || 0,
+                                completed: entry.completed || false,
+                                reason: isBuiltinLevelId(entry.id)
+                                    ? '与内置关卡ID冲突，用户选择另存为副本'
+                                    : (hasIdConflict
+                                        ? '同ID关卡已存在，用户选择另存为副本'
+                                        : '用户选择另存为副本'),
+                                decision: 'save_as_new',
+                                conflictType: isBuiltinLevelId(entry.id) ? 'builtin_conflict' :
+                                    (hasIdConflict ? 'id_conflict' : 'no_conflict')
+                            };
+                            results.saveAsNew.push(saveAsItem);
                             results.imported.push({
                                 id: newId,
                                 name: newLevelData.name,
                                 action: 'save_as_new',
                                 originalId: entry.id
                             });
+                            detailedResults.saveAsNew.push(saveAsItem);
                         } catch (e) {
+                            const failItem = {
+                                index: i,
+                                id: entry.id,
+                                name: entry.levelData?.name || entry.id,
+                                reason: '另存为副本时出错: ' + e.message,
+                                decision: 'save_as_new',
+                                conflictType: 'id_conflict'
+                            };
                             results.failed.push({
                                 id: entry.id,
                                 name: entry.levelData?.name,
-                                reason: e.message
+                                reason: failItem.reason
                             });
+                            detailedResults.failed.push(failItem);
                         }
                         break;
                     }
@@ -610,17 +716,38 @@ const Storage = (function() {
                                 allOperations[entry.id] = entry.operations;
                             }
 
+                            const newItem = {
+                                index: i,
+                                id: entry.id,
+                                name: entry.levelData?.name || entry.id,
+                                highScore: entry.highScore || 0,
+                                completed: entry.completed || false,
+                                reason: '全新关卡，新增导入',
+                                decision: 'import',
+                                conflictType: 'no_conflict'
+                            };
+                            results.new.push(newItem);
                             results.imported.push({
                                 id: entry.id,
                                 name: entry.levelData?.name,
                                 action: 'import'
                             });
+                            detailedResults.new.push(newItem);
                         } catch (e) {
+                            const failItem = {
+                                index: i,
+                                id: entry.id,
+                                name: entry.levelData?.name || entry.id,
+                                reason: '新增导入时出错: ' + e.message,
+                                decision: 'import',
+                                conflictType: 'no_conflict'
+                            };
                             results.failed.push({
                                 id: entry.id,
                                 name: entry.levelData?.name,
-                                reason: e.message
+                                reason: failItem.reason
                             });
+                            detailedResults.failed.push(failItem);
                         }
                         break;
                 }
@@ -631,17 +758,40 @@ const Storage = (function() {
 
             localStorage.setItem(KEYS.BATCH_RESTORE_SNAPSHOT, JSON.stringify(snapshot));
 
-            const batchRestoreInfo = {
-                timestamp: Date.now(),
+            const counts = {
                 total: backupData.levels.length,
+                new: detailedResults.new.length,
+                overwrite: detailedResults.overwrite.length,
+                saveAsNew: detailedResults.saveAsNew.length,
                 imported: results.imported.length,
-                skipped: results.skipped.length,
-                failed: results.failed.length,
-                overwrite: results.overwrite.length,
-                saveAsNew: results.saveAsNew.length,
+                skipped: detailedResults.skipped.length,
+                builtinConflict: detailedResults.builtinConflict.length,
+                badEntries: detailedResults.badEntries.length,
+                failed: detailedResults.failed.length
+            };
+
+            const batchRestoreInfo = {
+                recordId: 'restore-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+                timestamp: Date.now(),
+                undoable: true,
+                undone: false,
+                decisions: decisions || {},
+                counts: counts,
+                summary: {
+                    total: counts.total,
+                    imported: counts.imported,
+                    skipped: counts.skipped + counts.builtinConflict + counts.badEntries,
+                    failed: counts.failed
+                },
+                detailed: detailedResults,
                 results: results
             };
             localStorage.setItem(KEYS.LAST_BATCH_RESTORE, JSON.stringify(batchRestoreInfo));
+
+            const history = loadBatchRestoreHistory();
+            history.unshift(batchRestoreInfo);
+            if (history.length > 10) history.length = 10;
+            localStorage.setItem(KEYS.BATCH_RESTORE_HISTORY, JSON.stringify(history));
 
             saveLastOperation({
                 type: 'batch_restore',
@@ -652,10 +802,13 @@ const Storage = (function() {
 
             return {
                 success: true,
+                recordId: batchRestoreInfo.recordId,
                 importedCount: results.imported.length,
-                skippedCount: results.skipped.length,
-                failedCount: results.failed.length,
+                skippedCount: counts.skipped + counts.builtinConflict + counts.badEntries,
+                failedCount: counts.failed,
+                counts: counts,
                 results: results,
+                detailed: detailedResults,
                 undoable: true
             };
         } catch (e) {
@@ -663,9 +816,117 @@ const Storage = (function() {
             return {
                 success: false,
                 error: e.message,
-                results: { imported: [], skipped: [], failed: [], overwrite: [], saveAsNew: [] }
+                results: { imported: [], skipped: [], failed: [], overwrite: [], saveAsNew: [], new: [], builtinConflict: [], badEntries: [] },
+                detailed: { new: [], overwrite: [], saveAsNew: [], skipped: [], builtinConflict: [], badEntries: [], failed: [] }
             };
         }
+    }
+
+    function loadBatchRestoreHistory() {
+        try {
+            const data = localStorage.getItem(KEYS.BATCH_RESTORE_HISTORY);
+            return data ? JSON.parse(data) : [];
+        } catch (e) {
+            return [];
+        }
+    }
+
+    function getBatchRestoreRecord(recordId) {
+        const history = loadBatchRestoreHistory();
+        return history.find(r => r.recordId === recordId) || null;
+    }
+
+    function exportBatchRestoreRecordAsJson(recordId) {
+        const record = recordId ? getBatchRestoreRecord(recordId) : getLastBatchRestoreInfo();
+        if (!record) {
+            return { success: false, error: '找不到恢复记录' };
+        }
+
+        const exportData = {
+            exportType: 'batch_restore_report',
+            exportedAt: Date.now(),
+            record: {
+                recordId: record.recordId,
+                restoreTime: record.timestamp,
+                undoable: record.undoable,
+                undone: record.undone,
+                decisions: record.decisions || {}
+            },
+            counts: record.counts || record.summary || {
+                total: record.total,
+                imported: record.imported,
+                skipped: record.skipped,
+                failed: record.failed,
+                overwrite: record.overwrite,
+                saveAsNew: record.saveAsNew
+            },
+            categories: {
+                new: (record.detailed?.new || []).map(i => ({
+                    id: i.id,
+                    name: i.name,
+                    reason: i.reason,
+                    decision: i.decision,
+                    conflictType: i.conflictType,
+                    highScore: i.highScore,
+                    completed: i.completed
+                })),
+                overwrite: (record.detailed?.overwrite || []).map(i => ({
+                    id: i.id,
+                    name: i.name,
+                    originalName: i.originalName,
+                    reason: i.reason,
+                    decision: i.decision,
+                    conflictType: i.conflictType,
+                    highScore: i.highScore,
+                    completed: i.completed
+                })),
+                saveAsNew: (record.detailed?.saveAsNew || []).map(i => ({
+                    id: i.id,
+                    originalId: i.originalId,
+                    name: i.name,
+                    originalName: i.originalName,
+                    reason: i.reason,
+                    decision: i.decision,
+                    conflictType: i.conflictType,
+                    highScore: i.highScore,
+                    completed: i.completed
+                })),
+                skipped: (record.detailed?.skipped || []).map(i => ({
+                    id: i.id,
+                    name: i.name,
+                    reason: i.reason,
+                    decision: i.decision,
+                    conflictType: i.conflictType
+                })),
+                builtinConflict: (record.detailed?.builtinConflict || []).map(i => ({
+                    id: i.id,
+                    name: i.name,
+                    reason: i.reason,
+                    decision: i.decision,
+                    conflictType: i.conflictType
+                })),
+                badEntries: (record.detailed?.badEntries || []).map(i => ({
+                    id: i.id,
+                    name: i.name,
+                    reason: i.reason,
+                    decision: i.decision,
+                    conflictType: i.conflictType
+                })),
+                failed: (record.detailed?.failed || []).map(i => ({
+                    id: i.id,
+                    name: i.name,
+                    reason: i.reason,
+                    decision: i.decision,
+                    conflictType: i.conflictType
+                }))
+            }
+        };
+
+        return {
+            success: true,
+            json: JSON.stringify(exportData, null, 2),
+            data: exportData
+        };
     }
 
     function undoBatchRestore() {
@@ -686,13 +947,54 @@ const Storage = (function() {
 
             localStorage.removeItem(KEYS.BATCH_RESTORE_SNAPSHOT);
 
+            const lastRestore = getLastBatchRestoreInfo();
+            if (lastRestore && lastRestore.recordId) {
+                lastRestore.undoable = false;
+                lastRestore.undone = true;
+                lastRestore.undoneAt = Date.now();
+
+                if (lastRestore.counts) {
+                    lastRestore.counts._originalCounts = JSON.parse(JSON.stringify(lastRestore.counts));
+                    lastRestore.counts.new = 0;
+                    lastRestore.counts.overwrite = 0;
+                    lastRestore.counts.saveAsNew = 0;
+                    lastRestore.counts.imported = 0;
+                }
+                if (lastRestore.summary) {
+                    lastRestore.summary._originalSummary = JSON.parse(JSON.stringify(lastRestore.summary));
+                    lastRestore.summary.imported = 0;
+                }
+                if (lastRestore.detailed) {
+                    lastRestore.detailed._originalDetailed = JSON.parse(JSON.stringify(lastRestore.detailed));
+                    lastRestore.detailed.new = [];
+                    lastRestore.detailed.overwrite = [];
+                    lastRestore.detailed.saveAsNew = [];
+                }
+                if (lastRestore.results) {
+                    lastRestore.results._originalResults = JSON.parse(JSON.stringify(lastRestore.results));
+                    lastRestore.results.new = [];
+                    lastRestore.results.overwrite = [];
+                    lastRestore.results.saveAsNew = [];
+                    lastRestore.results.imported = [];
+                }
+
+                localStorage.setItem(KEYS.LAST_BATCH_RESTORE, JSON.stringify(lastRestore));
+
+                const history = loadBatchRestoreHistory();
+                const idx = history.findIndex(r => r.recordId === lastRestore.recordId);
+                if (idx !== -1) {
+                    history[idx] = lastRestore;
+                    localStorage.setItem(KEYS.BATCH_RESTORE_HISTORY, JSON.stringify(history));
+                }
+            }
+
             saveLastOperation({
                 type: 'undo_batch_restore',
                 timestamp: Date.now(),
                 success: true
             });
 
-            return { success: true };
+            return { success: true, recordId: lastRestore?.recordId };
         } catch (e) {
             console.error('Failed to undo batch restore:', e);
             return { success: false, reason: 'error', error: e.message };
@@ -756,6 +1058,9 @@ const Storage = (function() {
         getBatchRestoreUndoSnapshot,
         clearBatchRestoreUndoSnapshot,
         getLastBatchRestoreInfo,
-        clearLastBatchRestoreInfo
+        clearLastBatchRestoreInfo,
+        loadBatchRestoreHistory,
+        getBatchRestoreRecord,
+        exportBatchRestoreRecordAsJson
     };
 })();

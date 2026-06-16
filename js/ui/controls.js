@@ -23,6 +23,8 @@ const UIController = (function() {
             this._pendingRestoreData = null;
             this._restoreDecisions = {};
             this._precheckResult = null;
+            this._currentDetailRecordId = null;
+            this._currentDetailTab = 'new';
         }
 
         init() {
@@ -32,6 +34,7 @@ const UIController = (function() {
             this._restoreLastOperation();
             this._restoreUndoBar();
             this._restoreBatchUndoBar();
+            this._renderLastRestoreCard();
 
             const settings = Storage.loadSettings();
             this.infoPanel.updateSettingsUI();
@@ -103,10 +106,25 @@ const UIController = (function() {
             document.getElementById('btn-do-restore-precheck').addEventListener('click', () => this._doRestorePrecheck());
             document.getElementById('btn-confirm-restore').addEventListener('click', () => this._confirmRestore());
             document.getElementById('btn-close-restore-result').addEventListener('click', () => this._closeRestoreResult());
+            document.getElementById('btn-export-restore-result').addEventListener('click', () => this._exportCurrentRestoreResult());
 
             document.getElementById('btn-batch-overwrite').addEventListener('click', () => this._batchSetDecision('overwrite'));
             document.getElementById('btn-batch-skip').addEventListener('click', () => this._batchSetDecision('skip'));
             document.getElementById('btn-batch-saveas').addEventListener('click', () => this._batchSetDecision('save_as_new'));
+
+            document.getElementById('btn-view-restore-history').addEventListener('click', () => this._openRestoreHistory());
+            document.getElementById('btn-close-restore-history').addEventListener('click', () => this._closeRestoreHistory());
+            document.getElementById('btn-open-last-restore-detail').addEventListener('click', () => this._openLastRestoreDetail());
+
+            document.getElementById('btn-close-restore-detail').addEventListener('click', () => this._closeRestoreDetail());
+            document.getElementById('btn-export-restore-detail').addEventListener('click', () => this._exportDetailRecord());
+
+            document.querySelectorAll('.detail-tab').forEach(tab => {
+                tab.addEventListener('click', (e) => {
+                    const tabName = e.currentTarget.dataset.tab;
+                    this._switchDetailTab(tabName);
+                });
+            });
 
             document.getElementById('btn-replay').addEventListener('click', () => this._openReplay());
 
@@ -423,6 +441,7 @@ const UIController = (function() {
             this._restoreLastOperation();
             this._restoreUndoBar();
             this._restoreBatchUndoBar();
+            this._renderLastRestoreCard();
         }
 
         _dispatchWorker() {
@@ -800,7 +819,8 @@ const UIController = (function() {
                 this._restoreUndoBar();
                 this._restoreBatchUndoBar();
                 this._restoreLastOperation();
-                this.infoPanel.showNotification('已撤销批量恢复', 'success');
+                this._renderLastRestoreCard();
+                this.infoPanel.showNotification('已撤销批量恢复，记录已同步更新', 'success');
             } else {
                 const reasons = {
                     no_undo_snapshot: '没有可撤销的批量恢复',
@@ -1085,55 +1105,428 @@ const UIController = (function() {
             this._restoreLastOperation();
             this._restoreUndoBar();
             this._restoreBatchUndoBar();
+            this._renderLastRestoreCard();
 
             this._showRestoreResult(result);
         }
 
         _showRestoreResult(result) {
             const summary = document.getElementById('restore-result-summary');
+            const counts = result.counts || {
+                total: result.importedCount + result.skippedCount + result.failedCount,
+                new: 0,
+                overwrite: 0,
+                saveAsNew: 0,
+                builtinConflict: 0,
+                badEntries: 0
+            };
+
             summary.innerHTML = `
                 <div class="result-stat-row">
                     <span class="result-stat-label">处理总数：</span>
-                    <span class="result-stat-value">${result.importedCount + result.skippedCount + result.failedCount} 个</span>
+                    <span class="result-stat-value">${counts.total} 个</span>
                 </div>
                 <div class="result-stat-row">
-                    <span class="result-stat-label">成功导入：</span>
-                    <span class="result-stat-value result-success">${result.importedCount} 个</span>
+                    <span class="result-stat-label">✨ 新增：</span>
+                    <span class="result-stat-value result-success">${counts.new} 个</span>
                 </div>
                 <div class="result-stat-row">
-                    <span class="result-stat-label">跳过：</span>
+                    <span class="result-stat-label">🔄 覆盖：</span>
+                    <span class="result-stat-value result-success">${counts.overwrite} 个</span>
+                </div>
+                <div class="result-stat-row">
+                    <span class="result-stat-label">📝 另存为副本：</span>
+                    <span class="result-stat-value result-success">${counts.saveAsNew} 个</span>
+                </div>
+                <div class="result-stat-row">
+                    <span class="result-stat-label">⏭️ 跳过：</span>
                     <span class="result-stat-value result-skip">${result.skippedCount} 个</span>
                 </div>
                 <div class="result-stat-row">
-                    <span class="result-stat-label">失败：</span>
+                    <span class="result-stat-label">🚫 内置冲突：</span>
+                    <span class="result-stat-value result-skip">${counts.builtinConflict} 个</span>
+                </div>
+                <div class="result-stat-row">
+                    <span class="result-stat-label">❌ 坏条目：</span>
+                    <span class="result-stat-value result-skip">${counts.badEntries} 个</span>
+                </div>
+                <div class="result-stat-row">
+                    <span class="result-stat-label">⚠️ 失败：</span>
                     <span class="result-stat-value result-fail">${result.failedCount} 个</span>
                 </div>
             `;
 
             const details = document.getElementById('restore-result-details');
-            const imported = result.results.imported || [];
-            if (imported.length > 0) {
-                details.innerHTML += '<h4>✅ 成功导入的关卡</h4>';
-                details.innerHTML += imported.map(item =>
-                    `<div class="result-detail-item">${item.name} (${item.id}) - ${item.action === 'overwrite' ? '覆盖' : item.action === 'save_as_new' ? '另存为副本' : '新增'}</div>`
-                ).join('');
+            details.innerHTML = '';
+
+            const detailed = result.detailed;
+            if (detailed) {
+                if (detailed.new && detailed.new.length > 0) {
+                    details.innerHTML += '<h4>✨ 新增关卡</h4>';
+                    details.innerHTML += detailed.new.map(item =>
+                        `<div class="result-detail-item"><strong>${item.name}</strong> (${item.id})${item.highScore > 0 ? ` - 🏆 ${item.highScore}分` : ''}${item.completed ? ' - ✅已完成' : ''}<br><span class="result-reason">${item.reason}</span></div>`
+                    ).join('');
+                }
+
+                if (detailed.overwrite && detailed.overwrite.length > 0) {
+                    details.innerHTML += '<h4>🔄 覆盖关卡</h4>';
+                    details.innerHTML += detailed.overwrite.map(item =>
+                        `<div class="result-detail-item"><strong>${item.name}</strong> (${item.id}) - 原"${item.originalName}"<br><span class="result-reason">${item.reason}</span></div>`
+                    ).join('');
+                }
+
+                if (detailed.saveAsNew && detailed.saveAsNew.length > 0) {
+                    details.innerHTML += '<h4>📝 另存为副本</h4>';
+                    details.innerHTML += detailed.saveAsNew.map(item =>
+                        `<div class="result-detail-item"><strong>${item.name}</strong> (${item.id}) - 原ID: ${item.originalId}<br><span class="result-reason">${item.reason}</span></div>`
+                    ).join('');
+                }
+
+                if (detailed.skipped && detailed.skipped.length > 0) {
+                    details.innerHTML += '<h4>⏭️ 跳过关卡</h4>';
+                    details.innerHTML += detailed.skipped.map(item =>
+                        `<div class="result-detail-item"><strong>${item.name}</strong> (${item.id})<br><span class="result-reason">${item.reason}</span></div>`
+                    ).join('');
+                }
+
+                if (detailed.builtinConflict && detailed.builtinConflict.length > 0) {
+                    details.innerHTML += '<h4>🚫 内置关卡冲突</h4>';
+                    details.innerHTML += detailed.builtinConflict.map(item =>
+                        `<div class="result-detail-item"><strong>${item.name}</strong> (${item.id})<br><span class="result-reason">${item.reason}</span></div>`
+                    ).join('');
+                }
+
+                if (detailed.badEntries && detailed.badEntries.length > 0) {
+                    details.innerHTML += '<h4>❌ 损坏条目</h4>';
+                    details.innerHTML += detailed.badEntries.map(item =>
+                        `<div class="result-detail-item"><strong>${item.name}</strong> (${item.id})<br><span class="result-reason">${item.reason}</span></div>`
+                    ).join('');
+                }
+
+                if (detailed.failed && detailed.failed.length > 0) {
+                    details.innerHTML += '<h4>⚠️ 处理失败</h4>';
+                    details.innerHTML += detailed.failed.map(item =>
+                        `<div class="result-detail-item"><strong>${item.name}</strong> (${item.id})<br><span class="result-reason">${item.reason}</span></div>`
+                    ).join('');
+                }
+            } else {
+                const imported = result.results.imported || [];
+                if (imported.length > 0) {
+                    details.innerHTML += '<h4>✅ 成功导入的关卡</h4>';
+                    details.innerHTML += imported.map(item =>
+                        `<div class="result-detail-item">${item.name} (${item.id}) - ${item.action === 'overwrite' ? '覆盖' : item.action === 'save_as_new' ? '另存为副本' : '新增'}</div>`
+                    ).join('');
+                }
+
+                const failed = result.results.failed || [];
+                if (failed.length > 0) {
+                    details.innerHTML += '<h4>❌ 导入失败的关卡</h4>';
+                    details.innerHTML += failed.map(item =>
+                        `<div class="result-detail-item">${item.name || item.id} - ${item.reason}</div>`
+                    ).join('');
+                }
             }
 
-            const failed = result.results.failed || [];
-            if (failed.length > 0) {
-                details.innerHTML += '<h4>❌ 导入失败的关卡</h4>';
-                details.innerHTML += failed.map(item =>
-                    `<div class="result-detail-item">${item.name || item.id} - ${item.reason}</div>`
-                ).join('');
-            }
-
-            details.innerHTML += '<p class="restore-hint">💡 本次批量恢复可在主菜单撤销一次。</p>';
+            details.innerHTML += '<p class="restore-hint">💡 本次批量恢复可在主菜单撤销一次。记录已保存，可随时在主菜单"恢复记录"中查看详情或导出JSON。</p>';
 
             document.getElementById('restore-result-modal').classList.add('active');
         }
 
         _closeRestoreResult() {
             document.getElementById('restore-result-modal').classList.remove('active');
+        }
+
+        _exportCurrentRestoreResult() {
+            const lastRestore = Storage.getLastBatchRestoreInfo();
+            if (!lastRestore) {
+                this.infoPanel.showNotification('没有可导出的恢复结果', 'warning');
+                return;
+            }
+            this._downloadRestoreRecord(lastRestore.recordId);
+        }
+
+        _downloadRestoreRecord(recordId) {
+            const exportResult = Storage.exportBatchRestoreRecordAsJson(recordId);
+            if (!exportResult.success) {
+                this.infoPanel.showNotification('导出失败: ' + exportResult.error, 'error');
+                return;
+            }
+
+            try {
+                const blob = new Blob([exportResult.json], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                const record = recordId ? Storage.getBatchRestoreRecord(recordId) : Storage.getLastBatchRestoreInfo();
+                const dateStr = record?.timestamp ? new Date(record.timestamp).toISOString().slice(0, 10) : 'report';
+                a.download = `restore-report-${dateStr}-${(record?.recordId || 'report').slice(0, 8)}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                this.infoPanel.showNotification('恢复结果JSON已下载', 'success');
+            } catch (e) {
+                this.infoPanel.showNotification('下载失败: ' + e.message, 'error');
+            }
+        }
+
+        _renderLastRestoreCard() {
+            const card = document.getElementById('last-restore-card');
+            const content = document.getElementById('last-restore-card-content');
+            const lastRestore = Storage.getLastBatchRestoreInfo();
+
+            if (!lastRestore) {
+                card.classList.add('hidden');
+                return;
+            }
+
+            const counts = lastRestore.counts || lastRestore.summary || {
+                total: lastRestore.total,
+                new: 0,
+                overwrite: lastRestore.overwrite,
+                saveAsNew: lastRestore.saveAsNew,
+                imported: lastRestore.imported,
+                skipped: lastRestore.skipped,
+                failed: lastRestore.failed
+            };
+
+            const isUndone = lastRestore.undone;
+            const undoable = lastRestore.undoable;
+
+            let statusBadge = '';
+            if (isUndone) {
+                statusBadge = '<span class="restore-status-badge status-undone">已撤销</span>';
+            } else if (undoable) {
+                statusBadge = '<span class="restore-status-badge status-undoable">可撤销</span>';
+            } else {
+                statusBadge = '<span class="restore-status-badge status-done">已完成</span>';
+            }
+
+            content.innerHTML = `
+                <div class="restore-meta-row">
+                    <span class="restore-time">🕐 ${formatTimestamp(lastRestore.timestamp)}</span>
+                    ${statusBadge}
+                </div>
+                <div class="restore-stats-row">
+                    <span class="restore-stat-chip chip-new">✨ 新增 ${counts.new}</span>
+                    <span class="restore-stat-chip chip-overwrite">🔄 覆盖 ${counts.overwrite}</span>
+                    <span class="restore-stat-chip chip-saveas">📝 副本 ${counts.saveAsNew}</span>
+                    <span class="restore-stat-chip chip-skip">⏭️ 跳过 ${(counts.skipped || 0) + (counts.builtinConflict || 0) + (counts.badEntries || 0)}</span>
+                    <span class="restore-stat-chip chip-fail">⚠️ 失败 ${counts.failed}</span>
+                </div>
+                ${isUndone ? '<div class="restore-undone-note">ℹ️ 此恢复已被撤销，关卡数据已回退</div>' : ''}
+            `;
+
+            card.classList.remove('hidden');
+        }
+
+        _openRestoreHistory() {
+            const history = Storage.loadBatchRestoreHistory();
+            const list = document.getElementById('restore-history-list');
+
+            if (!history || history.length === 0) {
+                list.innerHTML = '<div class="empty-history">暂无批量恢复记录</div>';
+            } else {
+                list.innerHTML = history.map(record => {
+                    const counts = record.counts || record.summary || {};
+                    const isUndone = record.undone;
+                    const undoable = record.undoable;
+                    const statusClass = isUndone ? 'status-undone' : (undoable ? 'status-undoable' : 'status-done');
+                    const statusText = isUndone ? '已撤销' : (undoable ? '可撤销' : '已完成');
+
+                    return `
+                        <div class="history-item ${isUndone ? 'history-item-undone' : ''}" data-record-id="${record.recordId}">
+                            <div class="history-item-header">
+                                <span class="history-item-title">
+                                    <span class="history-item-time">🕐 ${formatTimestamp(record.timestamp)}</span>
+                                    <span class="history-item-status ${statusClass}">${statusText}</span>
+                                </span>
+                                <button class="btn btn-secondary btn-small view-detail-btn" data-id="${record.recordId}">查看详情</button>
+                            </div>
+                            <div class="history-item-stats">
+                                <span class="restore-stat-chip chip-new">✨ ${counts.new || 0}</span>
+                                <span class="restore-stat-chip chip-overwrite">🔄 ${counts.overwrite || 0}</span>
+                                <span class="restore-stat-chip chip-saveas">📝 ${counts.saveAsNew || 0}</span>
+                                <span class="restore-stat-chip chip-skip">⏭️ ${(counts.skipped || 0) + (counts.builtinConflict || 0) + (counts.badEntries || 0)}</span>
+                                <span class="restore-stat-chip chip-fail">⚠️ ${counts.failed || 0}</span>
+                            </div>
+                            ${isUndone ? '<div class="history-item-undone-label">已撤销</div>' : ''}
+                        </div>
+                    `;
+                }).join('');
+
+                list.querySelectorAll('.view-detail-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        const id = btn.dataset.id;
+                        this._openRestoreDetail(id);
+                    });
+                });
+            }
+
+            document.getElementById('restore-history-modal').classList.add('active');
+        }
+
+        _closeRestoreHistory() {
+            document.getElementById('restore-history-modal').classList.remove('active');
+        }
+
+        _openLastRestoreDetail() {
+            const last = Storage.getLastBatchRestoreInfo();
+            if (!last) {
+                this.infoPanel.showNotification('暂无恢复记录', 'warning');
+                return;
+            }
+            this._openRestoreDetail(last.recordId);
+        }
+
+        _openRestoreDetail(recordId) {
+            const record = Storage.getBatchRestoreRecord(recordId);
+            if (!record) {
+                this.infoPanel.showNotification('找不到该恢复记录', 'error');
+                return;
+            }
+
+            this._currentDetailRecordId = recordId;
+
+            const isUndone = record.undone;
+            const undoable = record.undoable;
+            const statusBar = document.getElementById('restore-detail-status-bar');
+            if (isUndone) {
+                statusBar.innerHTML = '<span class="detail-status status-undone">⚠️ 该记录已被撤销，关卡数据已回退</span>';
+                statusBar.className = 'restore-detail-status-bar status-bar-undone';
+            } else if (undoable) {
+                statusBar.innerHTML = '<span class="detail-status status-undoable">↩️ 该记录可在主菜单撤销</span>';
+                statusBar.className = 'restore-detail-status-bar status-bar-undoable';
+            } else {
+                statusBar.innerHTML = '<span class="detail-status status-done">✅ 已完成</span>';
+                statusBar.className = 'restore-detail-status-bar status-bar-done';
+            }
+
+            document.getElementById('restore-detail-title').textContent =
+                `📊 恢复记录详情 - ${formatTimestamp(record.timestamp)}`;
+
+            const counts = record.counts || record.summary || {};
+            const summary = document.getElementById('restore-detail-summary');
+            summary.innerHTML = `
+                <div class="detail-summary-item">
+                    <span class="detail-summary-label">处理总数</span>
+                    <span class="detail-summary-value">${counts.total || 0}</span>
+                </div>
+                <div class="detail-summary-item item-success">
+                    <span class="detail-summary-label">成功导入</span>
+                    <span class="detail-summary-value">${counts.imported || 0}</span>
+                </div>
+                <div class="detail-summary-item item-new">
+                    <span class="detail-summary-label">新增</span>
+                    <span class="detail-summary-value">${counts.new || 0}</span>
+                </div>
+                <div class="detail-summary-item item-overwrite">
+                    <span class="detail-summary-label">覆盖</span>
+                    <span class="detail-summary-value">${counts.overwrite || 0}</span>
+                </div>
+                <div class="detail-summary-item item-saveas">
+                    <span class="detail-summary-label">另存为</span>
+                    <span class="detail-summary-value">${counts.saveAsNew || 0}</span>
+                </div>
+                <div class="detail-summary-item item-skip">
+                    <span class="detail-summary-label">跳过</span>
+                    <span class="detail-summary-value">${(counts.skipped || 0) + (counts.builtinConflict || 0) + (counts.badEntries || 0)}</span>
+                </div>
+                <div class="detail-summary-item item-fail">
+                    <span class="detail-summary-label">失败</span>
+                    <span class="detail-summary-value">${counts.failed || 0}</span>
+                </div>
+            `;
+
+            document.getElementById('tab-count-new').textContent = counts.new || 0;
+            document.getElementById('tab-count-overwrite').textContent = counts.overwrite || 0;
+            document.getElementById('tab-count-saveAsNew').textContent = counts.saveAsNew || 0;
+            document.getElementById('tab-count-skipped').textContent = counts.skipped || 0;
+            document.getElementById('tab-count-builtinConflict').textContent = counts.builtinConflict || 0;
+            document.getElementById('tab-count-badEntries').textContent = counts.badEntries || 0;
+            document.getElementById('tab-count-failed').textContent = counts.failed || 0;
+
+            this._switchDetailTab('new');
+
+            document.getElementById('restore-detail-modal').classList.add('active');
+        }
+
+        _closeRestoreDetail() {
+            document.getElementById('restore-detail-modal').classList.remove('active');
+            this._currentDetailRecordId = null;
+        }
+
+        _switchDetailTab(tabName) {
+            this._currentDetailTab = tabName;
+
+            document.querySelectorAll('.detail-tab').forEach(tab => {
+                tab.classList.toggle('active', tab.dataset.tab === tabName);
+            });
+
+            const record = Storage.getBatchRestoreRecord(this._currentDetailRecordId);
+            const detailed = record?.detailed || {};
+            const content = document.getElementById('restore-detail-tab-content');
+
+            const items = detailed[tabName] || [];
+
+            if (items.length === 0) {
+                content.innerHTML = `<div class="tab-empty">此分类无条目</div>`;
+                return;
+            }
+
+            const tabLabels = {
+                new: { icon: '✨', label: '新增关卡' },
+                overwrite: { icon: '🔄', label: '覆盖关卡' },
+                saveAsNew: { icon: '📝', label: '另存为副本' },
+                skipped: { icon: '⏭️', label: '跳过关卡' },
+                builtinConflict: { icon: '🚫', label: '内置关卡冲突' },
+                badEntries: { icon: '❌', label: '损坏条目' },
+                failed: { icon: '⚠️', label: '处理失败' }
+            };
+
+            const renderItem = (item, tab) => {
+                let extra = '';
+                if (tab === 'overwrite' && item.originalName) {
+                    extra = `<div class="detail-item-extra">原名称: ${item.originalName}</div>`;
+                }
+                if ((tab === 'saveAsNew') {
+                    extra = `<div class="detail-item-extra">原ID: ${item.originalId || item.id}${item.originalName ? ` | 原名: ${item.originalName}` : ''}</div>`;
+                }
+                if (item.highScore > 0) {
+                    extra += `<div class="detail-item-extra">🏆 最高分: ${item.highScore}${item.completed ? ' | ✅ 已完成' : ''}</div>`;
+                }
+                const decisionLabels = {
+                    import: '新增导入',
+                    overwrite: '覆盖',
+                    save_as_new: '另存为副本',
+                    skip: '跳过'
+                };
+                return `
+                    <div class="detail-item">
+                        <div class="detail-item-header">
+                            <span class="detail-item-name">${item.name || item.id}</span>
+                            <span class="detail-item-id">${item.id}</span>
+                            ${item.decision ? `<span class="detail-item-decision">决策: ${decisionLabels[item.decision] || item.decision}</span>` : ''}
+                        </div>
+                        ${extra}
+                        <div class="detail-item-reason">${item.reason || ''}</div>
+                    </div>
+                `;
+            };
+
+            content.innerHTML = `
+                <h4 class="tab-section-title">${tabLabels[tabName]?.icon || ''} ${tabLabels[tabName]?.label || tabName} (${items.length})</h4>
+                ${items.map(item => renderItem(item, tabName)).join('')}
+            `;
+        }
+
+        _exportDetailRecord() {
+            if (!this._currentDetailRecordId) {
+                this.infoPanel.showNotification('没有选中的记录', 'warning');
+                return;
+            }
+            this._downloadRestoreRecord(this._currentDetailRecordId);
         }
 
         destroy() {

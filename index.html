@@ -16,6 +16,7 @@
                 <button id="btn-export" class="btn btn-secondary">📤 导出关卡</button>
                 <button id="btn-backup-all" class="btn btn-primary">📦 整包备份</button>
                 <button id="btn-restore-all" class="btn btn-warning">📥 整包恢复</button>
+                <button id="btn-view-restore-history" class="btn btn-secondary">📋 恢复记录</button>
                 <button id="btn-replay" class="btn btn-secondary">🎬 回放失败</button>
             </div>
         </header>
@@ -32,6 +33,13 @@
                     <div id="batch-undo-bar" class="batch-undo-bar hidden">
                         <span id="batch-undo-bar-text"></span>
                         <button id="btn-undo-batch-restore" class="btn btn-danger btn-small">↩️ 撤销批量恢复</button>
+                    </div>
+                    <div id="last-restore-card" class="last-restore-card hidden">
+                        <div class="last-restore-card-header">
+                            <span class="last-restore-card-title">📋 最近批量恢复记录</span>
+                            <button id="btn-open-last-restore-detail" class="btn btn-secondary btn-small">查看详情</button>
+                        </div>
+                        <div id="last-restore-card-content" class="last-restore-card-content"></div>
                     </div>
                     <div id="level-list" class="level-list"></div>
                     <div class="menu-info">
@@ -318,11 +326,44 @@
             </div>
 
             <div id="restore-result-modal" class="modal">
-                <div class="modal-content">
+                <div class="modal-content modal-wide">
                     <h2>✅ 恢复完成</h2>
                     <div id="restore-result-summary" class="restore-result-summary"></div>
                     <div class="restore-result-details" id="restore-result-details"></div>
-                    <button id="btn-close-restore-result" class="btn btn-primary">确定</button>
+                    <div class="restore-result-actions">
+                        <button id="btn-export-restore-result" class="btn btn-primary">📤 导出结果 JSON</button>
+                        <button id="btn-close-restore-result" class="btn btn-secondary">关闭</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="restore-history-modal" class="modal">
+                <div class="modal-content modal-wide modal-extra-wide">
+                    <h2>📋 批量恢复记录</h2>
+                    <div id="restore-history-list" class="restore-history-list"></div>
+                    <button id="btn-close-restore-history" class="btn btn-secondary">关闭</button>
+                </div>
+            </div>
+
+            <div id="restore-detail-modal" class="modal">
+                <div class="modal-content modal-wide modal-extra-wide">
+                    <h2 id="restore-detail-title">📊 恢复记录详情</h2>
+                    <div id="restore-detail-status-bar" class="restore-detail-status-bar"></div>
+                    <div id="restore-detail-summary" class="restore-detail-summary"></div>
+                    <div class="restore-detail-tabs" id="restore-detail-tabs">
+                        <button class="detail-tab active" data-tab="new">✨ 新增 (<span id="tab-count-new">0</span>)</button>
+                        <button class="detail-tab" data-tab="overwrite">🔄 覆盖 (<span id="tab-count-overwrite">0</span>)</button>
+                        <button class="detail-tab" data-tab="saveAsNew">📝 另存为副本 (<span id="tab-count-saveAsNew">0</span>)</button>
+                        <button class="detail-tab" data-tab="skipped">⏭️ 跳过 (<span id="tab-count-skipped">0</span>)</button>
+                        <button class="detail-tab" data-tab="builtinConflict">🚫 内置冲突 (<span id="tab-count-builtinConflict">0</span>)</button>
+                        <button class="detail-tab" data-tab="badEntries">❌ 坏条目 (<span id="tab-count-badEntries">0</span>)</button>
+                        <button class="detail-tab" data-tab="failed">⚠️ 失败 (<span id="tab-count-failed">0</span>)</button>
+                    </div>
+                    <div id="restore-detail-tab-content" class="restore-detail-tab-content"></div>
+                    <div class="restore-detail-actions">
+                        <button id="btn-export-restore-detail" class="btn btn-primary">📤 导出为 JSON</button>
+                        <button id="btn-close-restore-detail" class="btn btn-secondary">关闭</button>
+                    </div>
                 </div>
             </div>
 
