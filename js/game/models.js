@@ -155,6 +155,7 @@ const GameModels = (function() {
             this.lastOrderTime = 0;
             this.consecutiveOrders = 0;
             this.moveSpeed = 1;
+            this._moveProgress = 0;
             this._isMovingToPacking = false;
         }
 
@@ -170,6 +171,7 @@ const GameModels = (function() {
             this.currentOrder = order;
             this.path = path;
             this.pathIndex = 0;
+            this._moveProgress = 0;
             this.hasCart = useCart;
             this.cartId = useCart ? cartId : null;
             this.status = WORKER_STATUS.MOVING;
@@ -187,6 +189,7 @@ const GameModels = (function() {
         startReturning(path) {
             this.path = path;
             this.pathIndex = 0;
+            this._moveProgress = 0;
             this.status = WORKER_STATUS.RETURNING;
         }
 
@@ -199,6 +202,7 @@ const GameModels = (function() {
             this.cartId = null;
             this.path = [];
             this.pathIndex = 0;
+            this._moveProgress = 0;
             this._isMovingToPacking = false;
         }
 

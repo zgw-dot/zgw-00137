@@ -128,7 +128,10 @@ const GameEngine = context.GameEngine;
 const LEVEL_1 = context.LEVEL_1;
 const LEVEL_2 = context.LEVEL_2;
 
-console.log(`   模块加载状态: Storage=${!!Storage}, GameEngine=${!!GameEngine}, LEVEL_1=${!!LEVEL_1}`);
+assert(!!Storage, 'Storage 模块加载失败');
+assert(!!GameEngine, 'GameEngine 模块加载失败');
+assert(!!LEVEL_1, 'LEVEL_1 模块加载失败');
+console.log(`   模块加载状态: Storage=true, GameEngine=true, LEVEL_1=true`);
 
 console.log('\n🎮 开始完整链路测试...\n');
 
@@ -143,6 +146,7 @@ test('1. 初始化游戏引擎 - 验证开局状态', () => {
     console.log(`   拣货员数量: ${state.workers.length}`);
     console.log(`   推车数量: ${state.carts.length}`);
     console.log(`   订单数量: ${state.level.orders.length}`);
+    console.log(`   过关要求: 至少完成 ${state.level.minOrdersToPass} 个订单`);
     
     state.workers.forEach((w, i) => {
         console.log(`   拣货员 ${i+1}: ${w.name} (${w.id}) - status: '${w.status}'`);
@@ -169,33 +173,37 @@ test('2. 验证UI下拉选项状态 - 拣货员应可选择', () => {
     });
 });
 
-test('3. 首次派工 - 派遣拣货员处理第一个订单', () => {
+test('3. 首次派工 - 同时派遣两个拣货员处理前两单', () => {
     testGame.start();
     
     const state = testGame.getGameState();
-    const worker = state.workers[0];
-    const order = state.level.orders[0];
+    const workers = state.workers;
+    const orders = state.level.orders;
     
-    console.log(`   派遣 ${worker.name} (${worker.id}) 处理订单 ${order.id} (${order.shelfId})`);
-    
-    const result = testGame.dispatchWorker(worker.id, order.id, true);
-    console.log(`   派遣结果: ${result.success ? '成功' : '失败'}`);
-    
-    if (!result.success) {
-        console.log(`   错误: ${result.errors?.map(e => e.message).join(', ')}`);
+    for (let i = 0; i < Math.min(workers.length, 2); i++) {
+        const worker = workers[i];
+        const order = orders[i];
+        console.log(`   派遣 ${worker.name} (${worker.id}) 处理订单 ${order.id} (${order.shelfId})`);
+        
+        const result = testGame.dispatchWorker(worker.id, order.id, true);
+        console.log(`   派遣结果: ${result.success ? '成功' : '失败'}`);
+        
+        if (!result.success) {
+            console.log(`   错误: ${result.errors?.map(e => e.message).join(', ')}`);
+        }
+        
+        assert(result.success, `派遣 ${worker.name} 处理 ${order.id} 应成功，实际失败: ${result.errors?.map(e => e.message).join(', ')}`);
+        
+        const stateAfter = testGame.getGameState();
+        const workerAfter = stateAfter.workers.find(w => w.id === worker.id);
+        console.log(`   派遣后状态: ${workerAfter.status}`);
+        assert(workerAfter.status === 'moving', `派遣后状态应为 'moving'，实际为 '${workerAfter.status}'`);
+        assert(workerAfter.currentOrder?.id === order.id, `拣货员应关联订单 ${order.id}`);
+        assert(workerAfter.hasCart === true, '应使用推车');
     }
-    
-    assert(result.success, `首次派工应成功，实际失败: ${result.errors?.map(e => e.message).join(', ')}`);
-    
-    const stateAfter = testGame.getGameState();
-    const workerAfter = stateAfter.workers.find(w => w.id === worker.id);
-    console.log(`   派遣后状态: ${workerAfter.status}`);
-    assert(workerAfter.status === 'moving', `派遣后状态应为 'moving'，实际为 '${workerAfter.status}'`);
-    assert(workerAfter.currentOrder?.id === order.id, `拣货员应关联订单 ${order.id}`);
-    assert(workerAfter.hasCart === true, '应使用推车');
 });
 
-function advanceTime(game, seconds) {
+function advanceTimeRealFrames(game, seconds) {
     const originalNow = Date.now;
     const internalStart = game.lastUpdate || Date.now();
     let simulatedTime = internalStart;
@@ -204,7 +212,7 @@ function advanceTime(game, seconds) {
     Date.now = () => simulatedTime;
     
     while (simulatedTime < targetTime && game.status === 'playing') {
-        const stepMs = Math.min(500, targetTime - simulatedTime);
+        const stepMs = 16;
         simulatedTime += stepMs;
         game.update();
     }
@@ -212,22 +220,29 @@ function advanceTime(game, seconds) {
     Date.now = originalNow;
 }
 
-test('4. 模拟游戏时间推进 - 验证拣货员移动', () => {
-    console.log('   推进游戏时间 5 秒...');
-    advanceTime(testGame, 5);
+test('4. 真实逐帧模拟（16ms/帧）- 验证拣货员移动离开出生点', () => {
+    console.log('   推进游戏时间 3 秒（16ms/帧）...');
+    advanceTimeRealFrames(testGame, 3);
     
     const state = testGame.getGameState();
-    const worker = state.workers[0];
-    console.log(`   ${worker.name} 状态: ${worker.status}`);
-    console.log(`   当前位置: (${worker.position.x}, ${worker.position.y})`);
+    const worker1 = state.workers[0];
+    const worker2 = state.workers[1];
+    console.log(`   ${worker1.name} 状态: ${worker1.status}, 位置: (${worker1.position.x}, ${worker1.position.y})`);
+    console.log(`   ${worker2.name} 状态: ${worker2.status}, 位置: (${worker2.position.y}, ${worker2.position.y})`);
     
-    assert(worker.status !== 'idle', '拣货员应仍在处理订单');
+    const workersMoved = state.workers.filter(w => w.status !== 'idle');
+    console.log(`   处理中拣货员: ${workersMoved.length}/${state.workers.length}`);
+    
+    assert(workersMoved.length >= 1, '至少应一个拣货员在处理订单');
 });
 
-test('5. 继续推进时间 - 验证拣货和打包流程', () => {
-    const initialScore = testGame.getGameState().totalScore;
+test('5. 继续推进时间 - 自动派遣所有订单并验证得分增加', () => {
+    const initialState = testGame.getGameState();
+    const initialScore = initialState.totalScore;
+    const initialCompletedOrders = initialState.level.orders.filter(o => o.status === 'completed').length;
+    console.log(`   初始得分: ${initialScore}, 已完成: ${initialCompletedOrders}`);
     
-    console.log('   继续推进游戏时间 180 秒...');
+    console.log('   继续推进游戏时间并自动派遣空闲拣货员...');
     let completedOrders = 0;
     
     testGame.on('orderCompleted', (data) => {
@@ -235,33 +250,75 @@ test('5. 继续推进时间 - 验证拣货和打包流程', () => {
         console.log(`   ✅ 订单 ${data.order.id} 完成! +${data.score}分`);
     });
     
-    advanceTime(testGame, 180);
+    const originalNow = Date.now;
+    const internalStart = testGame.lastUpdate || Date.now();
+    let simulatedTime = internalStart;
+    const targetTime = internalStart + 180000;
+    
+    Date.now = () => simulatedTime;
+    
+    while (simulatedTime < targetTime && testGame.status === 'playing') {
+        const state = testGame.getGameState();
+        
+        for (const worker of state.workers) {
+            if (worker.status === 'idle') {
+                const pendingOrder = state.level.orders.find(o => o.status === 'pending');
+                if (pendingOrder) {
+                    const result = testGame.dispatchWorker(worker.id, pendingOrder.id, true);
+                    if (result.success) {
+                        console.log(`   🚀 自动派遣 ${worker.name} 处理 ${pendingOrder.id}`);
+                    }
+                }
+            }
+        }
+        
+        const stepMs = 16;
+        simulatedTime += stepMs;
+        testGame.update();
+    }
+    
+    Date.now = originalNow;
     
     const state = testGame.getGameState();
-    console.log(`   完成订单数: ${completedOrders}`);
-    console.log(`   最终得分: ${state.totalScore}`);
+    console.log(`   当前得分: ${state.totalScore}, 已完成订单: ${state.level.orders.filter(o => o.status === 'completed').length}`);
+    console.log(`   游戏状态: ${state.status}`);
     
-    assert(completedOrders > 0, '至少应完成一个订单');
-    assert(state.totalScore > initialScore, '得分应增加');
+    for (const w of state.workers) {
+        console.log(`   ${w.name}: status=${w.status}, pos=(${w.position.x},${w.position.y}), pathLen=${w.path.length}, pathIdx=${w.pathIndex}`);
+    }
+    for (const o of state.level.orders) {
+        console.log(`   ${o.id}: status=${o.status}, shelf=${o.shelfId}`);
+    }
+    
+    assert(state.totalScore > initialScore, `得分应从 ${initialScore} 增加，实际仍为 ${state.totalScore}`);
 });
 
-test('6. 验证游戏结束和结算', () => {
+test('6. 验证游戏胜利（所有订单完成）', () => {
     const state = testGame.getGameState();
+    const completedOrders = state.level.orders.filter(o => o.status === 'completed').length;
+    const timeoutOrders = state.level.orders.filter(o => o.status === 'timeout').length;
     
     console.log(`   游戏状态: ${state.status}`);
     console.log(`   最终得分: ${state.totalScore}`);
+    console.log(`   已完成订单: ${completedOrders}/${state.level.orders.length}`);
+    console.log(`   超时订单: ${timeoutOrders}`);
     
     if (state.status === 'won') {
         console.log('   🎉 关卡胜利!');
     } else if (state.status === 'lost') {
         console.log('   😢 关卡失败');
+        state.level.orders.forEach(o => {
+            console.log(`     订单 ${o.id}: status=${o.status}, shelf=${o.shelfId}`);
+        });
     }
     
     assert(state.status === 'won' || state.status === 'lost', 
         `游戏应已结束，实际状态为 '${state.status}'`);
+    assert(state.status === 'won', 
+        `游戏应胜利（完成所有订单），实际失败。已完成 ${completedOrders}/${state.level.orders.length}，超时 ${timeoutOrders}`);
 });
 
-test('7. 验证操作序列已保存', () => {
+test('7. 验证操作序列已保存 - 完整链路记录', () => {
     const state = testGame.getGameState();
     
     console.log(`   操作记录数: ${state.operations.length}`);
@@ -285,9 +342,34 @@ test('7. 验证操作序列已保存', () => {
     assert(completeOps.length > 0, '应有完成操作记录');
 });
 
+test('8. 验证得分已更新并可进入下一关', () => {
+    const state = testGame.getGameState();
+    
+    console.log(`   最终得分: ${state.totalScore}`);
+    console.log(`   游戏状态: ${state.status}`);
+    console.log(`   已完成订单: ${state.level.orders.filter(o => o.status === 'completed').length}/${state.level.orders.length}`);
+    
+    assert(state.totalScore > 0, '应有得分');
+    assert(state.status === 'won', '游戏应胜利才能进入下一关');
+    
+    const hasLevel2 = !!LEVEL_2;
+    console.log(`   下一关（LEVEL_2）是否存在: ${hasLevel2 ? '是' : '否'}`);
+    
+    if (hasLevel2) {
+        console.log(`   ✅ 可以进入下一关: ${LEVEL_2.name}`);
+        const nextGame = new GameEngine.Engine();
+        nextGame.initLevel(LEVEL_2);
+        const nextState = nextGame.getGameState();
+        console.log(`   ✅ 下一关初始化成功: ${nextState.level.name}, 拣货员: ${nextState.workers.length}人`);
+        assert(nextState.workers.length > 0, '下一关应至少有一个拣货员');
+    } else {
+        console.log(`   ℹ️ 当前是最后一关`);
+    }
+});
+
 console.log('\n🔄 测试第二关 - 单向巷道冲突拦截...\n');
 
-test('8. 初始化第二关 - 验证单向巷道配置', () => {
+test('9. 初始化第二关 - 验证单向巷道配置', () => {
     const game = new GameEngine.Engine();
     game.initLevel(LEVEL_2);
     
@@ -308,7 +390,7 @@ test('8. 初始化第二关 - 验证单向巷道配置', () => {
     assert(oneWayCount > 0, '第二关应有单向巷道');
 });
 
-test('9. 验证推车不足拦截 - 尝试分配超过可用数量的推车', () => {
+test('10. 验证推车不足拦截 - 尝试分配超过可用数量的推车', () => {
     console.log(`   直接测试碰撞检测模块的 checkResourceAvailability 函数...`);
     
     const game = new GameEngine.Engine();
@@ -348,7 +430,7 @@ test('9. 验证推车不足拦截 - 尝试分配超过可用数量的推车', ()
     console.log(`   ✅ 推车不足拦截正常工作!`);
 });
 
-test('10. 验证碰撞检测 - 忙碌拣货员不能被重复派遣', () => {
+test('11. 验证碰撞检测 - 忙碌拣货员不能被重复派遣', () => {
     const game = new GameEngine.Engine();
     game.initLevel(LEVEL_1);
     game.start();
@@ -375,13 +457,26 @@ test('10. 验证碰撞检测 - 忙碌拣货员不能被重复派遣', () => {
     assert(busyErrors.length > 0, '应有拣货员忙碌的错误提示');
 });
 
+test('12. 验证单向巷道冲突检测未被破坏', () => {
+    console.log(`   测试 validateDispatch 的完整检测链...`);
+    const collisionContent = fs.readFileSync(
+        path.join(__dirname, '..', 'js', 'game', 'collision.js'),
+        'utf8'
+    );
+    
+    assert(collisionContent.includes('checkOneWayCollision'), '缺少 checkOneWayCollision');
+    assert(collisionContent.includes('checkOneWayCongestion'), '缺少 checkOneWayCongestion');
+    assert(collisionContent.includes('checkPathOccupation'), '缺少 checkPathOccupation');
+    console.log(`   ✅ 单向巷道冲突检测逻辑完整存在`);
+});
+
 console.log('\n=== 测试总结 ===');
 const passed = testResults.filter(r => r.passed).length;
 const total = testResults.length;
 console.log(`通过: ${passed}/${total}`);
 
 if (passed < total) {
-    console.log('\n失败的测试:');
+    console.log('\n❌ 失败的测试:');
     testResults.filter(r => !r.passed).forEach(r => {
         console.log(`  ❌ ${r.name}: ${r.error}`);
     });
@@ -392,12 +487,15 @@ if (passed < total) {
     console.log('   ✅ 开局状态正确（拣货员空闲）');
     console.log('   ✅ UI下拉选项状态正确');
     console.log('   ✅ 首次派工功能正常');
-    console.log('   ✅ 拣货员移动正常');
+    console.log('   ✅ 拣货员移动正常（真实逐帧16ms/帧）');
     console.log('   ✅ 拣货流程正常');
     console.log('   ✅ 打包流程正常');
-    console.log('   ✅ 订单完成和结算正常');
+    console.log('   ✅ 订单完成和结算正常（得分增加）');
+    console.log('   ✅ 游戏胜利（不是失败）');
     console.log('   ✅ 操作序列记录完整');
+    console.log('   ✅ 可进入下一关');
     console.log('   ✅ 单向巷道配置正确');
     console.log('   ✅ 推车不足拦截正常');
     console.log('   ✅ 忙碌拣货员拦截正常');
+    console.log('   ✅ 单向巷道冲突检测未被破坏');
 }

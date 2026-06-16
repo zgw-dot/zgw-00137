@@ -180,34 +180,36 @@ const GameEngine = (function() {
                 return;
             }
 
-            const moveSpeed = worker.moveSpeed * deltaTime * 2;
+            worker._moveProgress = (worker._moveProgress || 0) + worker.moveSpeed * deltaTime;
 
-            while (moveSpeed > 0 && worker.pathIndex < worker.path.length) {
+            while (worker._moveProgress >= 1 && worker.pathIndex < worker.path.length) {
+                worker._moveProgress -= 1;
+
                 const targetPos = worker.path[worker.pathIndex];
-                const distance = worker.position.distanceTo(targetPos);
-
-                if (distance <= moveSpeed) {
-                    this.map.clearPositionOccupied(worker.position);
-                    worker.position = targetPos.clone();
-                    this.map.setPositionOccupied(worker.position, worker.id);
-                    
-                    this.operations.push(Operation.move(
-                        worker.id,
-                        worker.path[Math.max(0, worker.pathIndex - 1)] || worker.position,
-                        targetPos,
-                        this.currentTime
-                    ));
-                    
+                if (worker.position.equals(targetPos)) {
                     worker.pathIndex++;
-                    
-                    if (worker.hasCart && worker.cartId) {
-                        const cart = this.carts.find(c => c.id === worker.cartId);
-                        if (cart) {
-                            cart.position = worker.position.clone();
-                        }
+                    continue;
+                }
+
+                this.map.clearPositionOccupied(worker.position);
+                const fromPos = worker.position.clone();
+                worker.position = targetPos.clone();
+                this.map.setPositionOccupied(worker.position, worker.id);
+                
+                this.operations.push(Operation.move(
+                    worker.id,
+                    fromPos,
+                    targetPos,
+                    this.currentTime
+                ));
+                
+                worker.pathIndex++;
+                
+                if (worker.hasCart && worker.cartId) {
+                    const cart = this.carts.find(c => c.id === worker.cartId);
+                    if (cart) {
+                        cart.position = worker.position.clone();
                     }
-                } else {
-                    break;
                 }
             }
 
@@ -295,6 +297,7 @@ const GameEngine = (function() {
 
             worker.path = pathToPacking;
             worker.pathIndex = 0;
+            worker._moveProgress = 0;
             worker.status = WORKER_STATUS.MOVING;
             worker.targetPosition = packingPos;
             worker._isMovingToPacking = true;
