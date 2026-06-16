@@ -20,6 +20,9 @@ const UIController = (function() {
             this._pendingImportLevel = null;
             this._pendingDeleteLevelId = null;
             this._builtinLevelIds = [];
+            this._pendingRestoreData = null;
+            this._restoreDecisions = {};
+            this._precheckResult = null;
         }
 
         init() {
@@ -28,6 +31,7 @@ const UIController = (function() {
             this._renderMainMenu();
             this._restoreLastOperation();
             this._restoreUndoBar();
+            this._restoreBatchUndoBar();
 
             const settings = Storage.loadSettings();
             this.infoPanel.updateSettingsUI();
@@ -87,6 +91,22 @@ const UIController = (function() {
             document.getElementById('btn-cancel-delete').addEventListener('click', () => this._closeDeleteConfirm());
 
             document.getElementById('btn-undo-delete').addEventListener('click', () => this._undoDelete());
+            document.getElementById('btn-undo-batch-restore').addEventListener('click', () => this._undoBatchRestore());
+
+            document.getElementById('btn-backup-all').addEventListener('click', () => this._openBackupAll());
+            document.getElementById('btn-close-backup').addEventListener('click', () => this._closeBackupAll());
+            document.getElementById('btn-copy-backup').addEventListener('click', () => this._copyBackup());
+            document.getElementById('btn-download-backup').addEventListener('click', () => this._downloadBackup());
+
+            document.getElementById('btn-restore-all').addEventListener('click', () => this._openRestoreAll());
+            document.getElementById('btn-cancel-restore').addEventListener('click', () => this._closeRestoreAll());
+            document.getElementById('btn-do-restore-precheck').addEventListener('click', () => this._doRestorePrecheck());
+            document.getElementById('btn-confirm-restore').addEventListener('click', () => this._confirmRestore());
+            document.getElementById('btn-close-restore-result').addEventListener('click', () => this._closeRestoreResult());
+
+            document.getElementById('btn-batch-overwrite').addEventListener('click', () => this._batchSetDecision('overwrite'));
+            document.getElementById('btn-batch-skip').addEventListener('click', () => this._batchSetDecision('skip'));
+            document.getElementById('btn-batch-saveas').addEventListener('click', () => this._batchSetDecision('save_as_new'));
 
             document.getElementById('btn-replay').addEventListener('click', () => this._openReplay());
 
@@ -232,6 +252,7 @@ const UIController = (function() {
                 this._loadLevels();
                 this._renderMainMenu();
                 this._restoreUndoBar();
+                this._restoreBatchUndoBar();
                 this._restoreLastOperation();
                 this.infoPanel.showNotification('自定义关卡已删除', 'warning');
             } else {
@@ -245,6 +266,7 @@ const UIController = (function() {
                 this._loadLevels();
                 this._renderMainMenu();
                 this._restoreUndoBar();
+                this._restoreBatchUndoBar();
                 this._restoreLastOperation();
                 this.infoPanel.showNotification(`已恢复关卡 "${result.levelName}"`, 'success');
             } else {
@@ -400,6 +422,7 @@ const UIController = (function() {
             this._renderMainMenu();
             this._restoreLastOperation();
             this._restoreUndoBar();
+            this._restoreBatchUndoBar();
         }
 
         _dispatchWorker() {
@@ -630,6 +653,7 @@ const UIController = (function() {
             this._renderMainMenu();
             this._restoreLastOperation();
             this._restoreUndoBar();
+            this._restoreBatchUndoBar();
             this.infoPanel.showNotification(`关卡 "${level.name}" ${operationType === 'overwrite' ? '覆盖' : operationType === 'save_as_new' ? '另存为新关卡' : '导入'}成功！`, 'success');
         }
 
@@ -751,6 +775,350 @@ const UIController = (function() {
         _showScreen(screenId) {
             document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
             document.getElementById(screenId).classList.add('active');
+        }
+
+        _restoreBatchUndoBar() {
+            const undoBar = document.getElementById('batch-undo-bar');
+            const snapshot = Storage.getBatchRestoreUndoSnapshot();
+            if (!snapshot) {
+                undoBar.classList.add('hidden');
+                return;
+            }
+
+            const lastRestore = Storage.getLastBatchRestoreInfo();
+            const count = lastRestore?.imported || 0;
+            document.getElementById('batch-undo-bar-text').textContent =
+                `刚恢复了 ${count} 个关卡，可撤销本次批量恢复`;
+            undoBar.classList.remove('hidden');
+        }
+
+        _undoBatchRestore() {
+            const result = Storage.undoBatchRestore();
+            if (result.success) {
+                this._loadLevels();
+                this._renderMainMenu();
+                this._restoreUndoBar();
+                this._restoreBatchUndoBar();
+                this._restoreLastOperation();
+                this.infoPanel.showNotification('已撤销批量恢复', 'success');
+            } else {
+                const reasons = {
+                    no_undo_snapshot: '没有可撤销的批量恢复',
+                    invalid_snapshot: '撤销数据无效',
+                    error: '撤销失败'
+                };
+                this.infoPanel.showNotification(reasons[result.reason] || '撤销失败', 'error');
+            }
+        }
+
+        _openBackupAll() {
+            const backup = Storage.createFullBackup();
+            if (!backup.success) {
+                this.infoPanel.showNotification('备份失败: ' + backup.error, 'error');
+                return;
+            }
+
+            const customLevels = Storage.loadCustomLevels();
+            const count = Object.keys(customLevels).length;
+            const summary = document.getElementById('backup-summary');
+            summary.innerHTML = `
+                <div class="backup-summary-item">
+                    <span class="summary-label">关卡数量：</span>
+                    <span class="summary-value">${backup.levelCount} 个</span>
+                </div>
+                <div class="backup-summary-item">
+                    <span class="summary-label">备份时间：</span>
+                    <span class="summary-value">${formatTimestamp(Date.now())}</span>
+                </div>
+            `;
+
+            document.getElementById('backup-textarea').value = backup.json;
+            document.getElementById('backup-all-modal').classList.add('active');
+        }
+
+        _closeBackupAll() {
+            document.getElementById('backup-all-modal').classList.remove('active');
+        }
+
+        _copyBackup() {
+            const textarea = document.getElementById('backup-textarea');
+            textarea.select();
+            document.execCommand('copy');
+            this.infoPanel.showNotification('备份已复制到剪贴板', 'success');
+        }
+
+        _downloadBackup() {
+            const backup = Storage.createFullBackup();
+            if (!backup.success) {
+                this.infoPanel.showNotification('备份失败: ' + backup.error, 'error');
+                return;
+            }
+
+            try {
+                const blob = new Blob([backup.json], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `custom-levels-backup-${new Date().toISOString().slice(0, 10)}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                this.infoPanel.showNotification('备份文件已下载', 'success');
+            } catch (e) {
+                this.infoPanel.showNotification('下载失败: ' + e.message, 'error');
+            }
+        }
+
+        _openRestoreAll() {
+            document.getElementById('restore-textarea').value = '';
+            document.getElementById('restore-precheck-result').classList.add('hidden');
+            this._pendingRestoreData = null;
+            this._restoreDecisions = {};
+            this._precheckResult = null;
+            document.getElementById('restore-all-modal').classList.add('active');
+        }
+
+        _closeRestoreAll() {
+            document.getElementById('restore-all-modal').classList.remove('active');
+            this._pendingRestoreData = null;
+            this._restoreDecisions = {};
+            this._precheckResult = null;
+        }
+
+        _doRestorePrecheck() {
+            const textarea = document.getElementById('restore-textarea');
+            const jsonStr = textarea.value.trim();
+
+            if (!jsonStr) {
+                this.infoPanel.showNotification('请粘贴备份 JSON 内容', 'warning');
+                return;
+            }
+
+            const parseResult = Storage.validateAndParseBackup(jsonStr);
+            if (!parseResult.success) {
+                this.infoPanel.showNotification('备份解析失败: ' + parseResult.error, 'error');
+                return;
+            }
+
+            this._pendingRestoreData = parseResult.data;
+            this._precheckResult = Storage.precheckBackup(parseResult.data);
+            this._restoreDecisions = {};
+
+            const allLevels = parseResult.data.levels;
+            for (let i = 0; i < allLevels.length; i++) {
+                const entry = allLevels[i];
+                if (entry && entry.id && !Storage.isBuiltinLevelId(entry.id)) {
+                    const existingLevels = Storage.loadCustomLevels();
+                    if (existingLevels[entry.id]) {
+                        this._restoreDecisions[i] = { action: 'skip' };
+                    } else {
+                        this._restoreDecisions[i] = { action: 'import' };
+                    }
+                }
+            }
+
+            this._renderPrecheckResult();
+            document.getElementById('restore-precheck-result').classList.remove('hidden');
+        }
+
+        _renderPrecheckResult() {
+            const result = this._precheckResult;
+            if (!result) return;
+
+            document.getElementById('precheck-stat-total').textContent = `总计: ${result.totalCount}`;
+            document.getElementById('precheck-stat-new').textContent = `新增: ${result.newLevels.length}`;
+            document.getElementById('precheck-stat-conflict').textContent = `冲突: ${result.conflictLevels.length}`;
+            document.getElementById('precheck-stat-builtin').textContent = `内置冲突: ${result.builtinConflict.length}`;
+            document.getElementById('precheck-stat-bad').textContent = `坏条目: ${result.badEntries.length}`;
+
+            const newSection = document.getElementById('precheck-new-section');
+            const newList = document.getElementById('precheck-new-list');
+            if (result.newLevels.length > 0) {
+                newSection.classList.remove('hidden');
+                newList.innerHTML = result.newLevels.map(item => `
+                    <div class="precheck-item precheck-item-new">
+                        <div class="precheck-item-info">
+                            <span class="precheck-item-name">✨ ${item.name}</span>
+                            <span class="precheck-item-id">(${item.id})</span>
+                            ${item.highScore > 0 ? `<span class="precheck-item-score">🏆 ${item.highScore}分</span>` : ''}
+                        </div>
+                        <div class="precheck-item-action">
+                            <span class="action-label">将新增</span>
+                        </div>
+                    </div>
+                `).join('');
+            } else {
+                newSection.classList.add('hidden');
+            }
+
+            const conflictSection = document.getElementById('precheck-conflict-section');
+            const conflictList = document.getElementById('precheck-conflict-list');
+            if (result.conflictLevels.length > 0) {
+                conflictSection.classList.remove('hidden');
+                conflictList.innerHTML = result.conflictLevels.map(item => {
+                    const decision = this._restoreDecisions[item.index]?.action || 'skip';
+                    return `
+                        <div class="precheck-item precheck-item-conflict">
+                            <div class="precheck-item-info">
+                                <span class="precheck-item-name">⚠️ ${item.name}</span>
+                                <span class="precheck-item-id">(${item.id})</span>
+                                <span class="precheck-item-existing">现有: ${item.existingName}</span>
+                            </div>
+                            <div class="precheck-item-action">
+                                <select class="decision-select" data-index="${item.index}">
+                                    <option value="skip" ${decision === 'skip' ? 'selected' : ''}>跳过</option>
+                                    <option value="overwrite" ${decision === 'overwrite' ? 'selected' : ''}>覆盖</option>
+                                    <option value="save_as_new" ${decision === 'save_as_new' ? 'selected' : ''}>另存为副本</option>
+                                </select>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                conflictList.querySelectorAll('.decision-select').forEach(select => {
+                    select.addEventListener('change', (e) => {
+                        const idx = parseInt(e.target.dataset.index);
+                        this._restoreDecisions[idx] = { action: e.target.value };
+                    });
+                });
+            } else {
+                conflictSection.classList.add('hidden');
+            }
+
+            const builtinSection = document.getElementById('precheck-builtin-section');
+            const builtinList = document.getElementById('precheck-builtin-list');
+            if (result.builtinConflict.length > 0) {
+                builtinSection.classList.remove('hidden');
+                builtinList.innerHTML = result.builtinConflict.map(item => `
+                    <div class="precheck-item precheck-item-builtin">
+                        <div class="precheck-item-info">
+                            <span class="precheck-item-name">🚫 ${item.name}</span>
+                            <span class="precheck-item-id">(${item.id})</span>
+                        </div>
+                        <div class="precheck-item-action">
+                            <span class="action-label action-disabled">无法导入（内置ID）</span>
+                        </div>
+                    </div>
+                `).join('');
+            } else {
+                builtinSection.classList.add('hidden');
+            }
+
+            const badSection = document.getElementById('precheck-bad-section');
+            const badList = document.getElementById('precheck-bad-list');
+            if (result.badEntries.length > 0) {
+                badSection.classList.remove('hidden');
+                badList.innerHTML = result.badEntries.map(item => `
+                    <div class="precheck-item precheck-item-bad">
+                        <div class="precheck-item-info">
+                            <span class="precheck-item-name">❌ ${item.id}</span>
+                            <span class="precheck-item-reason">${item.reason}</span>
+                        </div>
+                        <div class="precheck-item-action">
+                            <span class="action-label action-disabled">已跳过</span>
+                        </div>
+                    </div>
+                `).join('');
+            } else {
+                badSection.classList.add('hidden');
+            }
+        }
+
+        _batchSetDecision(action) {
+            if (!this._precheckResult) return;
+
+            for (const item of this._precheckResult.conflictLevels) {
+                this._restoreDecisions[item.index] = { action: action };
+            }
+
+            this._renderPrecheckResult();
+        }
+
+        _confirmRestore() {
+            if (!this._pendingRestoreData || !this._precheckResult) {
+                this.infoPanel.showNotification('请先执行预检', 'warning');
+                return;
+            }
+
+            const decisions = [];
+            const allLevels = this._pendingRestoreData.levels;
+            for (let i = 0; i < allLevels.length; i++) {
+                const entry = allLevels[i];
+                if (entry && entry.id && !Storage.isBuiltinLevelId(entry.id)) {
+                    const existingLevels = Storage.loadCustomLevels();
+                    if (existingLevels[entry.id]) {
+                        decisions[i] = this._restoreDecisions[i] || { action: 'skip' };
+                    } else {
+                        decisions[i] = this._restoreDecisions[i] || { action: 'import' };
+                    }
+                } else {
+                    decisions[i] = { action: 'skip' };
+                }
+            }
+
+            const result = Storage.executeBatchRestore(this._pendingRestoreData, decisions);
+
+            if (!result.success) {
+                this.infoPanel.showNotification('恢复失败: ' + result.error, 'error');
+                return;
+            }
+
+            this._closeRestoreAll();
+            this._loadLevels();
+            this._renderMainMenu();
+            this._restoreLastOperation();
+            this._restoreUndoBar();
+            this._restoreBatchUndoBar();
+
+            this._showRestoreResult(result);
+        }
+
+        _showRestoreResult(result) {
+            const summary = document.getElementById('restore-result-summary');
+            summary.innerHTML = `
+                <div class="result-stat-row">
+                    <span class="result-stat-label">处理总数：</span>
+                    <span class="result-stat-value">${result.importedCount + result.skippedCount + result.failedCount} 个</span>
+                </div>
+                <div class="result-stat-row">
+                    <span class="result-stat-label">成功导入：</span>
+                    <span class="result-stat-value result-success">${result.importedCount} 个</span>
+                </div>
+                <div class="result-stat-row">
+                    <span class="result-stat-label">跳过：</span>
+                    <span class="result-stat-value result-skip">${result.skippedCount} 个</span>
+                </div>
+                <div class="result-stat-row">
+                    <span class="result-stat-label">失败：</span>
+                    <span class="result-stat-value result-fail">${result.failedCount} 个</span>
+                </div>
+            `;
+
+            const details = document.getElementById('restore-result-details');
+            const imported = result.results.imported || [];
+            if (imported.length > 0) {
+                details.innerHTML += '<h4>✅ 成功导入的关卡</h4>';
+                details.innerHTML += imported.map(item =>
+                    `<div class="result-detail-item">${item.name} (${item.id}) - ${item.action === 'overwrite' ? '覆盖' : item.action === 'save_as_new' ? '另存为副本' : '新增'}</div>`
+                ).join('');
+            }
+
+            const failed = result.results.failed || [];
+            if (failed.length > 0) {
+                details.innerHTML += '<h4>❌ 导入失败的关卡</h4>';
+                details.innerHTML += failed.map(item =>
+                    `<div class="result-detail-item">${item.name || item.id} - ${item.reason}</div>`
+                ).join('');
+            }
+
+            details.innerHTML += '<p class="restore-hint">💡 本次批量恢复可在主菜单撤销一次。</p>';
+
+            document.getElementById('restore-result-modal').classList.add('active');
+        }
+
+        _closeRestoreResult() {
+            document.getElementById('restore-result-modal').classList.remove('active');
         }
 
         destroy() {

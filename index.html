@@ -14,6 +14,8 @@
                 <button id="btn-settings" class="btn btn-secondary">⚙️ 设置</button>
                 <button id="btn-import" class="btn btn-secondary">📥 导入关卡</button>
                 <button id="btn-export" class="btn btn-secondary">📤 导出关卡</button>
+                <button id="btn-backup-all" class="btn btn-primary">📦 整包备份</button>
+                <button id="btn-restore-all" class="btn btn-warning">📥 整包恢复</button>
                 <button id="btn-replay" class="btn btn-secondary">🎬 回放失败</button>
             </div>
         </header>
@@ -26,6 +28,10 @@
                     <div id="undo-bar" class="undo-bar hidden">
                         <span id="undo-bar-text"></span>
                         <button id="btn-undo-delete" class="btn btn-warning btn-small">↩️ 撤销删除</button>
+                    </div>
+                    <div id="batch-undo-bar" class="batch-undo-bar hidden">
+                        <span id="batch-undo-bar-text"></span>
+                        <button id="btn-undo-batch-restore" class="btn btn-danger btn-small">↩️ 撤销批量恢复</button>
                     </div>
                     <div id="level-list" class="level-list"></div>
                     <div class="menu-info">
@@ -245,6 +251,78 @@
                     <p class="delete-hint">删除后可通过"撤销删除"恢复一次。</p>
                     <button id="btn-confirm-delete" class="btn btn-danger">🗑️ 确认删除</button>
                     <button id="btn-cancel-delete" class="btn btn-secondary">取消</button>
+                </div>
+            </div>
+
+            <div id="backup-all-modal" class="modal">
+                <div class="modal-content modal-wide">
+                    <h2>📦 整包备份</h2>
+                    <p>已将全部自定义关卡（含最高分、元数据等）打包为 JSON：</p>
+                    <div id="backup-summary" class="backup-summary"></div>
+                    <textarea id="backup-textarea" rows="12" readonly></textarea>
+                    <button id="btn-copy-backup" class="btn btn-primary">📋 复制到剪贴板</button>
+                    <button id="btn-download-backup" class="btn btn-success">💾 下载为文件</button>
+                    <button id="btn-close-backup" class="btn btn-secondary">关闭</button>
+                </div>
+            </div>
+
+            <div id="restore-all-modal" class="modal">
+                <div class="modal-content modal-wide">
+                    <h2>📥 整包恢复</h2>
+                    <p>粘贴整包备份 JSON：</p>
+                    <textarea id="restore-textarea" rows="8" placeholder='粘贴整包备份 JSON 内容...'></textarea>
+                    <button id="btn-do-restore-precheck" class="btn btn-primary">🔍 预检备份</button>
+                    <button id="btn-cancel-restore" class="btn btn-secondary">取消</button>
+
+                    <div id="restore-precheck-result" class="precheck-result hidden">
+                        <h3>📋 预检结果</h3>
+                        <div class="precheck-stats">
+                            <span class="stat-badge stat-total" id="precheck-stat-total">总计: 0</span>
+                            <span class="stat-badge stat-new" id="precheck-stat-new">新增: 0</span>
+                            <span class="stat-badge stat-conflict" id="precheck-stat-conflict">冲突: 0</span>
+                            <span class="stat-badge stat-builtin" id="precheck-stat-builtin">内置冲突: 0</span>
+                            <span class="stat-badge stat-bad" id="precheck-stat-bad">坏条目: 0</span>
+                        </div>
+
+                        <div id="precheck-new-section" class="precheck-section hidden">
+                            <h4>✨ 新增关卡</h4>
+                            <div id="precheck-new-list" class="precheck-list"></div>
+                        </div>
+
+                        <div id="precheck-conflict-section" class="precheck-section hidden">
+                            <h4>⚠️ ID 冲突（可选择处理方式）</h4>
+                            <div id="precheck-conflict-list" class="precheck-list"></div>
+                        </div>
+
+                        <div id="precheck-builtin-section" class="precheck-section hidden">
+                            <h4>🚫 内置关卡冲突（无法导入）</h4>
+                            <div id="precheck-builtin-list" class="precheck-list"></div>
+                        </div>
+
+                        <div id="precheck-bad-section" class="precheck-section hidden">
+                            <h4>❌ 损坏条目（无法导入）</h4>
+                            <div id="precheck-bad-list" class="precheck-list"></div>
+                        </div>
+
+                        <div class="restore-actions">
+                            <div class="restore-action-row">
+                                <label>批量设置冲突处理：</label>
+                                <button id="btn-batch-overwrite" class="btn btn-warning btn-small">全部覆盖</button>
+                                <button id="btn-batch-skip" class="btn btn-secondary btn-small">全部跳过</button>
+                                <button id="btn-batch-saveas" class="btn btn-primary btn-small">全部另存为副本</button>
+                            </div>
+                            <button id="btn-confirm-restore" class="btn btn-success btn-large">✅ 确认恢复</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="restore-result-modal" class="modal">
+                <div class="modal-content">
+                    <h2>✅ 恢复完成</h2>
+                    <div id="restore-result-summary" class="restore-result-summary"></div>
+                    <div class="restore-result-details" id="restore-result-details"></div>
+                    <button id="btn-close-restore-result" class="btn btn-primary">确定</button>
                 </div>
             </div>
 

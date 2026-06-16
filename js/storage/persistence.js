@@ -6,8 +6,12 @@ const Storage = (function() {
         CUSTOM_LEVELS: 'warehouse_game_custom_levels',
         OPERATION_HISTORY: 'warehouse_game_operation_history',
         LAST_OPERATION: 'warehouse_game_last_operation',
-        UNDO_SNAPSHOT: 'warehouse_game_undo_snapshot'
+        UNDO_SNAPSHOT: 'warehouse_game_undo_snapshot',
+        BATCH_RESTORE_SNAPSHOT: 'warehouse_game_batch_restore_snapshot',
+        LAST_BATCH_RESTORE: 'warehouse_game_last_batch_restore'
     };
+
+    const BACKUP_FORMAT_VERSION = 1;
 
     const BUILTIN_LEVEL_IDS = ['level-1', 'level-2'];
 
@@ -274,6 +278,412 @@ const Storage = (function() {
         return { ...DEFAULT_SETTINGS };
     }
 
+    function createFullBackup() {
+        try {
+            const customLevels = loadCustomLevels();
+            const progress = loadProgress();
+            const operationHistory = loadAllOperationHistory();
+
+            const levels = [];
+            for (const levelId in customLevels) {
+                const levelEntry = customLevels[levelId];
+                const levelData = { ...levelEntry };
+                delete levelData._meta;
+
+                levels.push({
+                    id: levelId,
+                    levelData: levelData,
+                    highScore: progress.highScores[levelId] || 0,
+                    completed: progress.completedLevels.includes(levelId),
+                    _meta: levelEntry._meta || null,
+                    operations: operationHistory[levelId] || null
+                });
+            }
+
+            const backup = {
+                version: BACKUP_FORMAT_VERSION,
+                exportedAt: Date.now(),
+                levelCount: levels.length,
+                levels: levels
+            };
+
+            return {
+                success: true,
+                data: backup,
+                json: JSON.stringify(backup, null, 2),
+                levelCount: levels.length
+            };
+        } catch (e) {
+            console.error('Failed to create full backup:', e);
+            return { success: false, error: e.message };
+        }
+    }
+
+    function validateAndParseBackup(jsonString) {
+        try {
+            const data = JSON.parse(jsonString);
+
+            if (!data || typeof data !== 'object') {
+                return { success: false, error: '备份数据格式错误' };
+            }
+
+            if (data.version !== BACKUP_FORMAT_VERSION) {
+                return { success: false, error: `不支持的备份版本: ${data.version}` };
+            }
+
+            if (!Array.isArray(data.levels)) {
+                return { success: false, error: '备份数据中缺少关卡列表' };
+            }
+
+            return { success: true, data: data };
+        } catch (e) {
+            return { success: false, error: 'JSON 解析失败: ' + e.message };
+        }
+    }
+
+    function precheckBackup(backupData) {
+        const result = {
+            newLevels: [],
+            conflictLevels: [],
+            builtinConflict: [],
+            badEntries: [],
+            totalCount: 0,
+            validCount: 0
+        };
+
+        if (!backupData || !Array.isArray(backupData.levels)) {
+            return result;
+        }
+
+        result.totalCount = backupData.levels.length;
+        const existingLevels = loadCustomLevels();
+
+        for (let i = 0; i < backupData.levels.length; i++) {
+            const entry = backupData.levels[i];
+
+            if (!entry || !entry.id || !entry.levelData || typeof entry.levelData !== 'object') {
+                result.badEntries.push({
+                    index: i,
+                    id: entry?.id || `#${i}`,
+                    reason: '关卡数据格式无效',
+                    rawData: entry
+                });
+                continue;
+            }
+
+            result.validCount++;
+
+            if (isBuiltinLevelId(entry.id)) {
+                result.builtinConflict.push({
+                    index: i,
+                    id: entry.id,
+                    name: entry.levelData?.name || entry.id,
+                    reason: '与内置关卡ID冲突'
+                });
+                continue;
+            }
+
+            const levelEntry = {
+                id: entry.id,
+                name: entry.levelData?.name || entry.id,
+                highScore: entry.highScore || 0,
+                completed: entry.completed || false,
+                _meta: entry._meta || null,
+                levelData: entry.levelData,
+                operations: entry.operations || null,
+                index: i
+            };
+
+            if (existingLevels[entry.id]) {
+                levelEntry.existingName = existingLevels[entry.id]?.name || entry.id;
+                result.conflictLevels.push(levelEntry);
+            } else {
+                result.newLevels.push(levelEntry);
+            }
+        }
+
+        return result;
+    }
+
+    function executeBatchRestore(backupData, decisions) {
+        try {
+            const snapshot = {
+                beforeLevels: loadCustomLevels(),
+                beforeProgress: loadProgress(),
+                beforeOperations: loadAllOperationHistory(),
+                restoreTime: Date.now(),
+                decisions: decisions
+            };
+
+            const currentLevels = loadCustomLevels();
+            const progress = loadProgress();
+            const allOperations = loadAllOperationHistory();
+
+            const results = {
+                imported: [],
+                skipped: [],
+                failed: [],
+                overwrite: [],
+                saveAsNew: []
+            };
+
+            if (!backupData || !Array.isArray(backupData.levels)) {
+                return { success: false, error: '备份数据无效', results };
+            }
+
+            for (let i = 0; i < backupData.levels.length; i++) {
+                const entry = backupData.levels[i];
+                const decision = decisions?.[i] || { action: 'skip' };
+
+                if (!entry || !entry.id || !entry.levelData) {
+                    results.failed.push({
+                        id: entry?.id || `#${i}`,
+                        reason: '无效的关卡数据'
+                    });
+                    continue;
+                }
+
+                if (isBuiltinLevelId(entry.id) && decision.action !== 'save_as_new') {
+                    results.failed.push({
+                        id: entry.id,
+                        name: entry.levelData?.name,
+                        reason: '与内置关卡ID冲突，无法导入'
+                    });
+                    continue;
+                }
+
+                switch (decision.action) {
+                    case 'skip':
+                        results.skipped.push({
+                            id: entry.id,
+                            name: entry.levelData?.name
+                        });
+                        break;
+
+                    case 'overwrite':
+                        try {
+                            const overwriteLevelData = { ...entry.levelData, id: entry.id };
+                            saveCustomLevel(overwriteLevelData,
+                                entry._meta?.sourceType || 'import',
+                                'batch_restore_overwrite');
+
+                            if (entry.highScore && entry.highScore > 0) {
+                                if (!progress.highScores[entry.id] || entry.highScore > progress.highScores[entry.id]) {
+                                    progress.highScores[entry.id] = entry.highScore;
+                                }
+                            }
+                            if (entry.completed && !progress.completedLevels.includes(entry.id)) {
+                                progress.completedLevels.push(entry.id);
+                            }
+
+                            if (entry.operations) {
+                                allOperations[entry.id] = entry.operations;
+                            }
+
+                            results.overwrite.push({
+                                id: entry.id,
+                                name: entry.levelData?.name
+                            });
+                            results.imported.push({
+                                id: entry.id,
+                                name: entry.levelData?.name,
+                                action: 'overwrite'
+                            });
+                        } catch (e) {
+                            results.failed.push({
+                                id: entry.id,
+                                name: entry.levelData?.name,
+                                reason: e.message
+                            });
+                        }
+                        break;
+
+                    case 'save_as_new': {
+                        let newId = entry.id + '-copy';
+                        let counter = 1;
+                        while (currentLevels[newId] || isBuiltinLevelId(newId)) {
+                            newId = entry.id + '-copy-' + counter;
+                            counter++;
+                        }
+
+                        try {
+                            const newLevelData = { ...entry.levelData, id: newId };
+                            if (entry.levelData?.name) {
+                                newLevelData.name = entry.levelData.name + ' (副本)';
+                            }
+
+                            saveCustomLevel(newLevelData,
+                                entry._meta?.sourceType || 'import',
+                                'batch_restore_save_as_new');
+
+                            if (entry.highScore && entry.highScore > 0) {
+                                progress.highScores[newId] = entry.highScore;
+                            }
+                            if (entry.completed) {
+                                progress.completedLevels.push(newId);
+                            }
+
+                            if (entry.operations) {
+                                allOperations[newId] = entry.operations;
+                            }
+
+                            results.saveAsNew.push({
+                                id: newId,
+                                originalId: entry.id,
+                                name: newLevelData.name
+                            });
+                            results.imported.push({
+                                id: newId,
+                                name: newLevelData.name,
+                                action: 'save_as_new',
+                                originalId: entry.id
+                            });
+                        } catch (e) {
+                            results.failed.push({
+                                id: entry.id,
+                                name: entry.levelData?.name,
+                                reason: e.message
+                            });
+                        }
+                        break;
+                    }
+
+                    case 'import':
+                    default:
+                        try {
+                            const importLevelData = { ...entry.levelData, id: entry.id };
+                            saveCustomLevel(importLevelData,
+                                entry._meta?.sourceType || 'import',
+                                'batch_restore_import');
+
+                            if (entry.highScore && entry.highScore > 0) {
+                                progress.highScores[entry.id] = entry.highScore;
+                            }
+                            if (entry.completed) {
+                                if (!progress.completedLevels.includes(entry.id)) {
+                                    progress.completedLevels.push(entry.id);
+                                }
+                            }
+
+                            if (entry.operations) {
+                                allOperations[entry.id] = entry.operations;
+                            }
+
+                            results.imported.push({
+                                id: entry.id,
+                                name: entry.levelData?.name,
+                                action: 'import'
+                            });
+                        } catch (e) {
+                            results.failed.push({
+                                id: entry.id,
+                                name: entry.levelData?.name,
+                                reason: e.message
+                            });
+                        }
+                        break;
+                }
+            }
+
+            saveProgress(progress);
+            localStorage.setItem(KEYS.OPERATION_HISTORY, JSON.stringify(allOperations));
+
+            localStorage.setItem(KEYS.BATCH_RESTORE_SNAPSHOT, JSON.stringify(snapshot));
+
+            const batchRestoreInfo = {
+                timestamp: Date.now(),
+                total: backupData.levels.length,
+                imported: results.imported.length,
+                skipped: results.skipped.length,
+                failed: results.failed.length,
+                overwrite: results.overwrite.length,
+                saveAsNew: results.saveAsNew.length,
+                results: results
+            };
+            localStorage.setItem(KEYS.LAST_BATCH_RESTORE, JSON.stringify(batchRestoreInfo));
+
+            saveLastOperation({
+                type: 'batch_restore',
+                levelCount: results.imported.length,
+                timestamp: Date.now(),
+                success: true
+            });
+
+            return {
+                success: true,
+                importedCount: results.imported.length,
+                skippedCount: results.skipped.length,
+                failedCount: results.failed.length,
+                results: results,
+                undoable: true
+            };
+        } catch (e) {
+            console.error('Batch restore failed:', e);
+            return {
+                success: false,
+                error: e.message,
+                results: { imported: [], skipped: [], failed: [], overwrite: [], saveAsNew: [] }
+            };
+        }
+    }
+
+    function undoBatchRestore() {
+        try {
+            const snapshotData = localStorage.getItem(KEYS.BATCH_RESTORE_SNAPSHOT);
+            if (!snapshotData) {
+                return { success: false, reason: 'no_undo_snapshot' };
+            }
+
+            const snapshot = JSON.parse(snapshotData);
+            if (!snapshot.beforeLevels) {
+                return { success: false, reason: 'invalid_snapshot' };
+            }
+
+            localStorage.setItem(KEYS.CUSTOM_LEVELS, JSON.stringify(snapshot.beforeLevels));
+            saveProgress(snapshot.beforeProgress);
+            localStorage.setItem(KEYS.OPERATION_HISTORY, JSON.stringify(snapshot.beforeOperations || {}));
+
+            localStorage.removeItem(KEYS.BATCH_RESTORE_SNAPSHOT);
+
+            saveLastOperation({
+                type: 'undo_batch_restore',
+                timestamp: Date.now(),
+                success: true
+            });
+
+            return { success: true };
+        } catch (e) {
+            console.error('Failed to undo batch restore:', e);
+            return { success: false, reason: 'error', error: e.message };
+        }
+    }
+
+    function getBatchRestoreUndoSnapshot() {
+        try {
+            const data = localStorage.getItem(KEYS.BATCH_RESTORE_SNAPSHOT);
+            return data ? JSON.parse(data) : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function clearBatchRestoreUndoSnapshot() {
+        localStorage.removeItem(KEYS.BATCH_RESTORE_SNAPSHOT);
+    }
+
+    function getLastBatchRestoreInfo() {
+        try {
+            const data = localStorage.getItem(KEYS.LAST_BATCH_RESTORE);
+            return data ? JSON.parse(data) : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function clearLastBatchRestoreInfo() {
+        localStorage.removeItem(KEYS.LAST_BATCH_RESTORE);
+    }
+
     return {
         saveProgress,
         loadProgress,
@@ -296,6 +706,15 @@ const Storage = (function() {
         getDefaultSettings,
         registerBuiltinIds,
         isBuiltinLevelId,
-        BUILTIN_LEVEL_IDS
+        BUILTIN_LEVEL_IDS,
+        createFullBackup,
+        validateAndParseBackup,
+        precheckBackup,
+        executeBatchRestore,
+        undoBatchRestore,
+        getBatchRestoreUndoSnapshot,
+        clearBatchRestoreUndoSnapshot,
+        getLastBatchRestoreInfo,
+        clearLastBatchRestoreInfo
     };
 })();

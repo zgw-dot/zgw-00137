@@ -817,6 +817,607 @@ test('26. 删除后操作记录保留', () => {
     }
 });
 
+console.log('\n📦 测试整包备份/恢复增强功能...\n');
+
+const CUSTOM_LEVEL_A = {
+    id: 'custom-batch-a',
+    name: '批量测试关卡A',
+    description: '用于整包备份测试的关卡A',
+    difficulty: 1,
+    timeLimit: 180,
+    mapWidth: 6,
+    mapHeight: 6,
+    mapData: [
+        ['sp', 'a', 'a', 'a', 'a', 'sp'],
+        ['s:S1', 'a', 's:S2', 'a', 's:S3', 'a'],
+        ['e', 'a', 'e', 'a', 'e', 'a'],
+        ['s:S4', 'a', 's:S5', 'a', 's:S6', 'a'],
+        ['e', 'a', 'e', 'a', 'e', 'a'],
+        ['sp', 'a', 'a', 'p', 'a', 'sp']
+    ],
+    workerCount: 2,
+    cartCount: 2,
+    orders: [
+        { id: 'O-A1', shelfId: 'S1', deadline: 120, items: ['商品A'] },
+        { id: 'O-A2', shelfId: 'S3', deadline: 100, items: ['商品B'] }
+    ],
+    pickDuration: 3,
+    packDuration: 2,
+    targetScore: 400,
+    minOrdersToPass: 2
+};
+
+const CUSTOM_LEVEL_B = {
+    id: 'custom-batch-b',
+    name: '批量测试关卡B',
+    description: '用于整包备份测试的关卡B',
+    difficulty: 2,
+    timeLimit: 240,
+    mapWidth: 8,
+    mapHeight: 6,
+    mapData: [
+        ['sp', 'a', 'a', 'a', 'a', 'a', 'a', 'sp'],
+        ['s:S1', 'a', 's:S2', 'a', 's:S3', 'a', 's:S4', 'a'],
+        ['e', 'a', 'e', 'a', 'e', 'a', 'e', 'a'],
+        ['s:S5', 'a', 's:S6', 'a', 's:S7', 'a', 's:S8', 'a'],
+        ['e', 'a', 'e', 'a', 'e', 'a', 'e', 'a'],
+        ['sp', 'a', 'a', 'p', 'p', 'a', 'a', 'sp']
+    ],
+    workerCount: 3,
+    cartCount: 3,
+    orders: [
+        { id: 'O-B1', shelfId: 'S1', deadline: 150, items: ['商品X'] },
+        { id: 'O-B2', shelfId: 'S5', deadline: 130, items: ['商品Y'] },
+        { id: 'O-B3', shelfId: 'S8', deadline: 180, items: ['商品Z'] }
+    ],
+    pickDuration: 2,
+    packDuration: 2,
+    targetScore: 700,
+    minOrdersToPass: 3
+};
+
+function clearAllCustomLevels() {
+    const levels = Storage.loadCustomLevels();
+    for (const id in levels) {
+        Storage.deleteCustomLevel(id);
+        Storage.clearUndoSnapshot();
+    }
+    Storage.clearBatchRestoreUndoSnapshot();
+    Storage.clearLastBatchRestoreInfo();
+
+    const progress = Storage.loadProgress();
+    for (const id in progress.highScores) {
+        if (id.startsWith('custom-') || levels[id]) {
+            delete progress.highScores[id];
+        }
+    }
+    progress.completedLevels = progress.completedLevels.filter(id => 
+        !id.startsWith('custom-') && !levels[id]
+    );
+    Storage.saveProgress(progress);
+}
+
+test('27. 整包备份 - 空数据时生成备份', () => {
+    clearAllCustomLevels();
+
+    const backup = Storage.createFullBackup();
+    assert(backup.success === true, '备份应成功');
+    assert(backup.levelCount === 0, '空数据时关卡数应为0');
+    assert(backup.data.version === 1, '备份版本应为1');
+    assert(!!backup.data.exportedAt, '应有导出时间戳');
+    assert(Array.isArray(backup.data.levels), 'levels应为数组');
+    assert(backup.data.levels.length === 0, 'levels数组应为空');
+
+    const parsed = JSON.parse(backup.json);
+    assert(parsed.version === 1, 'JSON中的版本应正确');
+    assert(parsed.levelCount === 0, 'JSON中的关卡数应正确');
+
+    console.log('   ✅ 空备份生成成功');
+});
+
+test('28. 整包备份 - 有数据时生成完整备份', () => {
+    clearAllCustomLevels();
+
+    Storage.saveCustomLevel(CUSTOM_LEVEL_A, 'import', 'import');
+    Storage.saveCustomLevel(CUSTOM_LEVEL_B, 'import', 'import');
+
+    const progress = Storage.loadProgress();
+    progress.highScores['custom-batch-a'] = 500;
+    progress.completedLevels.push('custom-batch-a');
+    Storage.saveProgress(progress);
+
+    const backup = Storage.createFullBackup();
+    assert(backup.success === true, '备份应成功');
+    assert(backup.levelCount === 2, '应有2个关卡');
+    assert(backup.data.levels.length === 2, 'levels数组应有2个元素');
+
+    const levelA = backup.data.levels.find(l => l.id === 'custom-batch-a');
+    assert(!!levelA, '应包含关卡A');
+    assert(levelA.levelData.name === '批量测试关卡A', '关卡A名称应正确');
+    assert(levelA.highScore === 500, '关卡A最高分应正确');
+    assert(levelA.completed === true, '关卡A应标记为已完成');
+    assert(!!levelA._meta, '关卡A应包含_meta');
+    assert(levelA._meta.sourceType === 'import', '来源类型应为import');
+    assert(!!levelA._meta.importTime, '应有导入时间');
+
+    const levelB = backup.data.levels.find(l => l.id === 'custom-batch-b');
+    assert(!!levelB, '应包含关卡B');
+    assert(levelB.levelData.name === '批量测试关卡B', '关卡B名称应正确');
+    assert(levelB.highScore === 0, '关卡B最高分应为0');
+    assert(levelB.completed === false, '关卡B应标记为未完成');
+
+    console.log('   关卡A: id=%s, name=%s, highScore=%d', levelA.id, levelA.levelData.name, levelA.highScore);
+    console.log('   关卡B: id=%s, name=%s, highScore=%d', levelB.id, levelB.levelData.name, levelB.highScore);
+    console.log('   ✅ 完整备份生成成功，包含关卡数据、最高分、元数据');
+});
+
+test('29. 备份数据验证 - 格式校验', () => {
+    console.log('   测试各种无效备份格式...');
+
+    const badJson = Storage.validateAndParseBackup('not json at all');
+    assert(badJson.success === false, '非JSON应解析失败');
+    assert(badJson.error.includes('JSON'), '错误应提示JSON相关');
+
+    const badVersion = Storage.validateAndParseBackup(JSON.stringify({ version: 999, levels: [] }));
+    assert(badVersion.success === false, '版本不匹配应失败');
+    assert(badVersion.error.includes('版本'), '错误应提示版本相关');
+
+    const noLevels = Storage.validateAndParseBackup(JSON.stringify({ version: 1 }));
+    assert(noLevels.success === false, '缺少levels应失败');
+
+    const validBackup = Storage.validateAndParseBackup(JSON.stringify({ version: 1, levels: [] }));
+    assert(validBackup.success === true, '有效备份应通过验证');
+
+    console.log('   ✅ 备份格式验证正常');
+});
+
+test('30. 预检 - 全新增关卡', () => {
+    clearAllCustomLevels();
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 2,
+        levels: [
+            { id: 'custom-batch-a', levelData: CUSTOM_LEVEL_A, highScore: 500, completed: true },
+            { id: 'custom-batch-b', levelData: CUSTOM_LEVEL_B, highScore: 0, completed: false }
+        ]
+    };
+
+    const precheck = Storage.precheckBackup(backupData);
+    assert(precheck.totalCount === 2, '总数量应为2');
+    assert(precheck.validCount === 2, '有效数量应为2');
+    assert(precheck.newLevels.length === 2, '新增关卡应为2');
+    assert(precheck.conflictLevels.length === 0, '冲突关卡应为0');
+    assert(precheck.builtinConflict.length === 0, '内置冲突应为0');
+    assert(precheck.badEntries.length === 0, '坏条目应为0');
+
+    assert(precheck.newLevels[0].name === '批量测试关卡A', '新增关卡名称应正确');
+    assert(precheck.newLevels[0].highScore === 500, '新增关卡最高分应正确');
+
+    console.log('   新增: %d, 冲突: %d, 内置冲突: %d, 坏条目: %d',
+        precheck.newLevels.length, precheck.conflictLevels.length,
+        precheck.builtinConflict.length, precheck.badEntries.length);
+    console.log('   ✅ 全新增关卡预检正确');
+});
+
+test('31. 预检 - 部分冲突 + 内置ID冲突 + 坏条目', () => {
+    clearAllCustomLevels();
+
+    Storage.saveCustomLevel(CUSTOM_LEVEL_A, 'import', 'import');
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 5,
+        levels: [
+            { id: 'custom-batch-a', levelData: { ...CUSTOM_LEVEL_A, name: '修改后的关卡A' }, highScore: 800, completed: true },
+            { id: 'custom-batch-b', levelData: CUSTOM_LEVEL_B, highScore: 300, completed: false },
+            { id: 'level-1', levelData: { id: 'level-1', name: '伪内置关卡' }, highScore: 100, completed: true },
+            { id: 'bad-entry-1' },
+            null
+        ]
+    };
+
+    const precheck = Storage.precheckBackup(backupData);
+    assert(precheck.totalCount === 5, '总数量应为5');
+    assert(precheck.validCount === 3, '有效数量应为3');
+    assert(precheck.newLevels.length === 1, '新增关卡应为1');
+    assert(precheck.conflictLevels.length === 1, '冲突关卡应为1');
+    assert(precheck.builtinConflict.length === 1, '内置冲突应为1');
+    assert(precheck.badEntries.length === 2, '坏条目应为2');
+
+    assert(precheck.conflictLevels[0].id === 'custom-batch-a', '冲突关卡ID应正确');
+    assert(precheck.conflictLevels[0].existingName === '批量测试关卡A', '现有关卡名称应正确');
+    assert(precheck.conflictLevels[0].name === '修改后的关卡A', '导入关卡名称应正确');
+
+    assert(precheck.builtinConflict[0].id === 'level-1', '内置冲突ID应正确');
+    assert(precheck.builtinConflict[0].reason === '与内置关卡ID冲突', '原因应正确');
+
+    assert(precheck.badEntries[0].id === 'bad-entry-1', '第一个坏条目ID应正确');
+    assert(precheck.badEntries[0].reason === '关卡数据格式无效', '坏条目原因应正确');
+
+    console.log('   总计: %d, 有效: %d', precheck.totalCount, precheck.validCount);
+    console.log('   新增: %d, 冲突: %d, 内置冲突: %d, 坏条目: %d',
+        precheck.newLevels.length, precheck.conflictLevels.length,
+        precheck.builtinConflict.length, precheck.badEntries.length);
+    console.log('   ✅ 混合场景预检正确');
+});
+
+test('32. 批量恢复 - 全新增关卡导入', () => {
+    clearAllCustomLevels();
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 2,
+        levels: [
+            { id: 'custom-batch-a', levelData: CUSTOM_LEVEL_A, highScore: 500, completed: true },
+            { id: 'custom-batch-b', levelData: CUSTOM_LEVEL_B, highScore: 300, completed: false }
+        ]
+    };
+
+    const decisions = [
+        { action: 'import' },
+        { action: 'import' }
+    ];
+
+    const result = Storage.executeBatchRestore(backupData, decisions);
+    assert(result.success === true, '恢复应成功');
+    assert(result.importedCount === 2, '应导入2个关卡');
+    assert(result.skippedCount === 0, '应跳过0个');
+    assert(result.failedCount === 0, '应失败0个');
+    assert(result.undoable === true, '应支持撤销');
+
+    const levels = Storage.loadCustomLevels();
+    assert(!!levels['custom-batch-a'], '关卡A应存在');
+    assert(!!levels['custom-batch-b'], '关卡B应存在');
+    assert(levels['custom-batch-a'].name === '批量测试关卡A', '关卡A名称应正确');
+    assert(levels['custom-batch-b'].name === '批量测试关卡B', '关卡B名称应正确');
+
+    const progress = Storage.loadProgress();
+    assert(progress.highScores['custom-batch-a'] === 500, '关卡A最高分应正确');
+    assert(progress.highScores['custom-batch-b'] === 300, '关卡B最高分应正确');
+    assert(progress.completedLevels.includes('custom-batch-a'), '关卡A应标记为已完成');
+
+    const snapshot = Storage.getBatchRestoreUndoSnapshot();
+    assert(!!snapshot, '应有批量恢复撤销快照');
+    assert(!!snapshot.beforeLevels, '快照应包含之前的关卡数据');
+
+    const lastRestore = Storage.getLastBatchRestoreInfo();
+    assert(!!lastRestore, '应有上次批量恢复信息');
+    assert(lastRestore.imported === 2, '上次恢复导入数应正确');
+
+    console.log('   导入: %d, 跳过: %d, 失败: %d',
+        result.importedCount, result.skippedCount, result.failedCount);
+    console.log('   ✅ 全新增关卡批量恢复成功');
+});
+
+test('33. 批量恢复 - 冲突处理：覆盖 + 跳过 + 另存为副本', () => {
+    clearAllCustomLevels();
+
+    Storage.saveCustomLevel(CUSTOM_LEVEL_A, 'import', 'import');
+    Storage.saveCustomLevel(CUSTOM_LEVEL_B, 'import', 'import');
+
+    const originalLevels = Storage.loadCustomLevels();
+    const originalImportTimeA = originalLevels['custom-batch-a']._meta.importTime;
+
+    const progressBefore = Storage.loadProgress();
+    const originalHighScoreB = progressBefore.highScores['custom-batch-b'];
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 3,
+        levels: [
+            { id: 'custom-batch-a', levelData: { ...CUSTOM_LEVEL_A, name: '覆盖后的A', difficulty: 3 }, highScore: 999, completed: true },
+            { id: 'custom-batch-b', levelData: { ...CUSTOM_LEVEL_B, name: '跳过的B' }, highScore: 888, completed: false },
+            { id: 'custom-batch-c', levelData: { ...CUSTOM_LEVEL_A, id: 'custom-batch-c', name: '新关卡C' }, highScore: 0, completed: false }
+        ]
+    };
+
+    const decisions = [
+        { action: 'overwrite' },
+        { action: 'skip' },
+        { action: 'import' }
+    ];
+
+    const result = Storage.executeBatchRestore(backupData, decisions);
+    assert(result.success === true, '恢复应成功');
+    assert(result.importedCount === 2, '应导入2个（1覆盖+1新增）');
+    assert(result.skippedCount === 1, '应跳过1个');
+    assert(result.failedCount === 0, '应失败0个');
+
+    assert(result.results.overwrite.length === 1, '覆盖数量应为1');
+    assert(result.results.skipped.length === 1, '跳过数量应为1');
+    assert(result.results.imported.some(i => i.action === 'overwrite'), '应有覆盖操作');
+    assert(result.results.imported.some(i => i.action === 'import'), '应有新增操作');
+
+    const levels = Storage.loadCustomLevels();
+    assert(levels['custom-batch-a'].name === '覆盖后的A', '关卡A应被覆盖');
+    assert(levels['custom-batch-a'].difficulty === 3, '关卡A难度应更新');
+    assert(levels['custom-batch-a']._meta.importTime === originalImportTimeA, '首次导入时间应保留');
+    assert(levels['custom-batch-a']._meta.lastOperation === 'batch_restore_overwrite', '最近操作应记录为批量覆盖');
+
+    assert(levels['custom-batch-b'].name === '批量测试关卡B', '关卡B名称应保持不变（跳过）');
+
+    assert(!!levels['custom-batch-c'], '关卡C应新增成功');
+    assert(levels['custom-batch-c'].name === '新关卡C', '关卡C名称应正确');
+
+    const progress = Storage.loadProgress();
+    assert(progress.highScores['custom-batch-a'] === 999, '关卡A最高分应被覆盖更新');
+    assert(progress.highScores['custom-batch-b'] === originalHighScoreB, '关卡B最高分应保持不变（跳过）');
+
+    console.log('   导入: %d, 跳过: %d, 失败: %d',
+        result.importedCount, result.skippedCount, result.failedCount);
+    console.log('   覆盖: %d, 另存为: %d', result.results.overwrite.length, result.results.saveAsNew.length);
+    console.log('   ✅ 混合冲突处理正确');
+});
+
+test('34. 批量恢复 - 另存为副本功能', () => {
+    clearAllCustomLevels();
+
+    Storage.saveCustomLevel(CUSTOM_LEVEL_A, 'import', 'import');
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 1,
+        levels: [
+            { id: 'custom-batch-a', levelData: CUSTOM_LEVEL_A, highScore: 500, completed: false }
+        ]
+    };
+
+    const decisions = [
+        { action: 'save_as_new' }
+    ];
+
+    const result = Storage.executeBatchRestore(backupData, decisions);
+    assert(result.success === true, '恢复应成功');
+    assert(result.importedCount === 1, '应导入1个');
+    assert(result.results.saveAsNew.length === 1, '另存为数量应为1');
+
+    const newId = result.results.saveAsNew[0].id;
+    assert(newId !== 'custom-batch-a', '新ID不应与原ID相同');
+    assert(newId.startsWith('custom-batch-a-copy'), '新ID应包含copy前缀');
+
+    const levels = Storage.loadCustomLevels();
+    assert(!!levels['custom-batch-a'], '原关卡应保留');
+    assert(levels['custom-batch-a'].name === '批量测试关卡A', '原关卡名称应不变');
+    assert(!!levels[newId], '新关卡应存在');
+    assert(levels[newId].name.includes('副本'), '新关卡名称应包含副本标记');
+
+    console.log('   原ID: custom-batch-a, 新ID: %s', newId);
+    console.log('   新关卡名: %s', levels[newId].name);
+    console.log('   ✅ 另存为副本功能正确');
+});
+
+test('35. 批量恢复 - 内置关卡ID冲突拦截', () => {
+    clearAllCustomLevels();
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 2,
+        levels: [
+            { id: 'level-1', levelData: { id: 'level-1', name: '伪关卡1' }, highScore: 100 },
+            { id: 'custom-ok', levelData: CUSTOM_LEVEL_A, highScore: 200 }
+        ]
+    };
+
+    const decisions = [
+        { action: 'import' },
+        { action: 'import' }
+    ];
+
+    const result = Storage.executeBatchRestore(backupData, decisions);
+    assert(result.success === true, '恢复应成功（部分失败但整体流程成功）');
+    assert(result.importedCount === 1, '应成功导入1个');
+    assert(result.failedCount === 1, '应失败1个（内置ID冲突）');
+
+    assert(result.results.failed[0].id === 'level-1', '失败的应是level-1');
+    assert(result.results.failed[0].reason.includes('内置'), '失败原因应包含内置');
+
+    const levels = Storage.loadCustomLevels();
+    assert(!levels['level-1'], '内置ID不应被导入');
+    assert(!!levels['custom-ok'], '正常关卡应导入成功');
+
+    console.log('   导入: %d, 失败: %d', result.importedCount, result.failedCount);
+    console.log('   失败原因: %s', result.results.failed[0].reason);
+    console.log('   ✅ 内置关卡ID冲突拦截正确');
+});
+
+test('36. 批量恢复撤销 - 完整撤销一次恢复', () => {
+    clearAllCustomLevels();
+
+    Storage.saveCustomLevel(CUSTOM_LEVEL_A, 'import', 'import');
+
+    const beforeLevels = { ...Storage.loadCustomLevels() };
+    const beforeProgress = { ...Storage.loadProgress() };
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 2,
+        levels: [
+            { id: 'custom-batch-a', levelData: { ...CUSTOM_LEVEL_A, name: '被覆盖的A' }, highScore: 999 },
+            { id: 'custom-new-1', levelData: CUSTOM_LEVEL_B, highScore: 500 }
+        ]
+    };
+
+    const decisions = [
+        { action: 'overwrite' },
+        { action: 'import' }
+    ];
+
+    const restoreResult = Storage.executeBatchRestore(backupData, decisions);
+    assert(restoreResult.success === true, '恢复应成功');
+
+    let levels = Storage.loadCustomLevels();
+    assert(levels['custom-batch-a'].name === '被覆盖的A', '恢复后关卡A应被覆盖');
+    assert(!!levels['custom-new-1'], '恢复后新关卡应存在');
+
+    const undoResult = Storage.undoBatchRestore();
+    assert(undoResult.success === true, '撤销应成功');
+
+    levels = Storage.loadCustomLevels();
+    assert(levels['custom-batch-a'].name === '批量测试关卡A', '撤销后关卡A应恢复原名');
+    assert(!levels['custom-new-1'], '撤销后新关卡应被移除');
+
+    const progress = Storage.loadProgress();
+    assert(progress.highScores['custom-batch-a'] === beforeProgress.highScores['custom-batch-a'],
+        '撤销后最高分应恢复');
+
+    const snapshotAfter = Storage.getBatchRestoreUndoSnapshot();
+    assert(!snapshotAfter, '撤销后快照应被清除');
+
+    const lastOp = Storage.loadLastOperation();
+    assert(lastOp.type === 'undo_batch_restore', '最近操作应为undo_batch_restore');
+
+    console.log('   撤销前: %d 个关卡', Object.keys(beforeLevels).length);
+    console.log('   恢复后: %d 个关卡', Object.keys(Storage.loadCustomLevels()).length + 1);
+    console.log('   撤销后: %d 个关卡', Object.keys(levels).length);
+    console.log('   ✅ 批量恢复撤销功能正确');
+});
+
+test('37. 批量恢复撤销 - 无快照时撤销失败', () => {
+    clearAllCustomLevels();
+
+    const result = Storage.undoBatchRestore();
+    assert(result.success === false, '没有快照时撤销应失败');
+    assert(result.reason === 'no_undo_snapshot', '失败原因应为no_undo_snapshot');
+
+    console.log('   撤销结果: success=%s, reason=%s', result.success, result.reason);
+    console.log('   ✅ 无快照时撤销拦截正确');
+});
+
+test('38. 跨重启状态保留 - 批量恢复相关状态', () => {
+    clearAllCustomLevels();
+
+    Storage.saveCustomLevel(CUSTOM_LEVEL_A, 'import', 'import');
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 1,
+        levels: [
+            { id: 'custom-batch-b', levelData: CUSTOM_LEVEL_B, highScore: 300 }
+        ]
+    };
+
+    Storage.executeBatchRestore(backupData, [{ action: 'import' }]);
+
+    console.log('   模拟页面刷新（重新从 localStorage 加载）...');
+
+    const customLevels = Storage.loadCustomLevels();
+    assert(!!customLevels['custom-batch-a'], '刷新后关卡A应仍在');
+    assert(!!customLevels['custom-batch-b'], '刷新后关卡B应仍在');
+
+    const snapshot = Storage.getBatchRestoreUndoSnapshot();
+    assert(!!snapshot, '刷新后批量撤销快照应保留');
+
+    const lastRestore = Storage.getLastBatchRestoreInfo();
+    assert(!!lastRestore, '刷新后上次恢复信息应保留');
+    assert(lastRestore.imported === 1, '刷新后上次恢复导入数应正确');
+
+    const lastOp = Storage.loadLastOperation();
+    assert(!!lastOp, '刷新后最近操作应保留');
+    assert(lastOp.type === 'batch_restore', '最近操作类型应为批量恢复');
+
+    console.log('   自定义关卡数: %d', Object.keys(customLevels).length);
+    console.log('   撤销快照: %s', snapshot ? '存在' : '不存在');
+    console.log('   上次恢复信息: %s', lastRestore ? '存在' : '不存在');
+    console.log('   ✅ 跨重启状态保留正常');
+});
+
+test('39. 元数据保留 - 导入时间、最近操作等', () => {
+    clearAllCustomLevels();
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 1,
+        levels: [
+            {
+                id: 'custom-meta-test',
+                levelData: CUSTOM_LEVEL_A,
+                highScore: 600,
+                completed: true,
+                _meta: {
+                    sourceType: 'batch_import',
+                    importTime: Date.now() - 86400000,
+                    lastModifiedTime: Date.now() - 3600000,
+                    lastOperation: 'some_operation',
+                    lastOperationTime: Date.now() - 1800000
+                }
+            }
+        ]
+    };
+
+    const result = Storage.executeBatchRestore(backupData, [{ action: 'import' }]);
+    assert(result.success === true, '恢复应成功');
+
+    const levels = Storage.loadCustomLevels();
+    const level = levels['custom-meta-test'];
+    assert(!!level, '关卡应存在');
+    assert(!!level._meta, '应有_meta元数据');
+    assert(level._meta.sourceType === 'batch_import', '来源类型应保留');
+    assert(!!level._meta.importTime, '应有导入时间');
+    assert(level._meta.lastOperation === 'batch_restore_import', '最近操作应更新为批量恢复导入');
+    assert(!!level._meta.lastOperationTime, '应有最近操作时间');
+
+    console.log('   来源类型: %s', level._meta.sourceType);
+    console.log('   最近操作: %s', level._meta.lastOperation);
+    console.log('   ✅ 元数据处理正确');
+});
+
+test('40. 多次批量恢复 - 只保留最近一次撤销快照', () => {
+    clearAllCustomLevels();
+
+    const backup1 = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 1,
+        levels: [
+            { id: 'custom-multi-1', levelData: { ...CUSTOM_LEVEL_A, id: 'custom-multi-1', name: '多次恢复1' }, highScore: 100 }
+        ]
+    };
+
+    const backup2 = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 1,
+        levels: [
+            { id: 'custom-multi-2', levelData: { ...CUSTOM_LEVEL_B, id: 'custom-multi-2', name: '多次恢复2' }, highScore: 200 }
+        ]
+    };
+
+    const result1 = Storage.executeBatchRestore(backup1, [{ action: 'import' }]);
+    assert(result1.success === true, '第一次恢复应成功');
+
+    const snapshot1 = Storage.getBatchRestoreUndoSnapshot();
+    const snapshot1Time = snapshot1?.restoreTime;
+
+    const result2 = Storage.executeBatchRestore(backup2, [{ action: 'import' }]);
+    assert(result2.success === true, '第二次恢复应成功');
+
+    const snapshot2 = Storage.getBatchRestoreUndoSnapshot();
+    assert(!!snapshot2, '第二次恢复后应有快照');
+    assert(snapshot2.restoreTime !== snapshot1Time, '快照应更新为第二次恢复的');
+
+    const undoResult = Storage.undoBatchRestore();
+    assert(undoResult.success === true, '撤销应成功');
+
+    const levels = Storage.loadCustomLevels();
+    assert(!!levels['custom-multi-1'], '撤销后第一次恢复的关卡应仍在');
+    assert(!levels['custom-multi-2'], '撤销后第二次恢复的关卡应被移除');
+
+    console.log('   第一次恢复后: 1个关卡');
+    console.log('   第二次恢复后: 2个关卡');
+    console.log('   撤销后: %d 个关卡（应剩下第一次的）', Object.keys(levels).length);
+    console.log('   ✅ 多次恢复只保留最近一次撤销快照');
+});
+
 console.log('\n=== 测试总结 ===');
 const passed = testResults.filter(r => r.passed).length;
 const total = testResults.length;
