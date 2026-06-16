@@ -27,8 +27,8 @@ const InfoPanel = (function() {
         }
 
         updateResourceStatus(workers, carts) {
-            const availableWorkers = workers.filter(w => w.status === 'IDLE').length;
-            const busyWorkers = workers.filter(w => w.status !== 'IDLE').length;
+            const availableWorkers = workers.filter(w => w.status === 'idle').length;
+            const busyWorkers = workers.filter(w => w.status !== 'idle').length;
             const usedCarts = carts.filter(c => c.inUse).length;
             const availableCarts = carts.length - usedCarts;
 
@@ -140,8 +140,8 @@ const InfoPanel = (function() {
             for (const worker of workers) {
                 const option = document.createElement('option');
                 option.value = worker.id;
-                option.disabled = worker.status !== 'IDLE';
-                option.textContent = `${worker.name} (${worker.id}) ${worker.status !== 'IDLE' ? ' - 忙碌中' : ' - 空闲'}`;
+                option.disabled = worker.status !== 'idle';
+                option.textContent = `${worker.name} (${worker.id}) ${worker.status !== 'idle' ? ' - 忙碌中' : ' - 空闲'}`;
                 
                 if (worker.id === selectedWorkerId) {
                     option.selected = true;

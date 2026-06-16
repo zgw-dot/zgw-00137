@@ -91,7 +91,7 @@ const CollisionDetector = (function() {
     }
 
     function checkResourceAvailability(workers, carts, useCart) {
-        const idleWorkers = workers.filter(w => w.status === 'IDLE');
+        const idleWorkers = workers.filter(w => w.status === 'idle');
         if (idleWorkers.length === 0) {
             return {
                 type: 'no_idle_workers',
@@ -151,7 +151,7 @@ const CollisionDetector = (function() {
             };
         }
 
-        if (worker.status !== 'IDLE') {
+        if (worker.status !== 'idle') {
             return {
                 type: 'worker_busy',
                 message: `拣货员 ${worker.name} 正在忙碌中`
@@ -213,7 +213,7 @@ const CollisionDetector = (function() {
                     const occupiedError = checkPathOccupation(map, pathToShelf, worker.id);
                     if (occupiedError) errors.push(occupiedError);
 
-                    const congestionError = checkOneWayCongestion(map, pathToShelf, workers.filter(w => w.status !== 'IDLE'));
+                    const congestionError = checkOneWayCongestion(map, pathToShelf, workers.filter(w => w.status !== 'idle'));
                     if (congestionError) errors.push(congestionError);
                 }
 
@@ -232,7 +232,7 @@ const CollisionDetector = (function() {
         const positionMap = new Map();
 
         for (const worker of workers) {
-            if (worker.status === 'IDLE') continue;
+            if (worker.status === 'idle') continue;
 
             const posKey = `${worker.position.x},${worker.position.y}`;
             
@@ -253,7 +253,7 @@ const CollisionDetector = (function() {
                 const w1 = workers[i];
                 const w2 = workers[j];
                 
-                if (w1.status === 'IDLE' || w2.status === 'IDLE') continue;
+                if (w1.status === 'idle' || w2.status === 'idle') continue;
                 if (w1.path.length === 0 || w2.path.length === 0) continue;
 
                 for (const pos1 of w1.path) {

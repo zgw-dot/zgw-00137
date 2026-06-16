@@ -408,7 +408,7 @@ const GameEngine = (function() {
                 o => o.status === ORDER_STATUS.COMPLETED || o.status === ORDER_STATUS.TIMEOUT
             );
 
-            const allWorkersIdle = this.workers.every(w => w.status === 'IDLE');
+            const allWorkersIdle = this.workers.every(w => w.status === 'idle');
 
             if (allOrdersProcessed && allWorkersIdle) {
                 const passed = ScoringSystem.isLevelPassed(this.level.orders, this.level);
@@ -465,7 +465,7 @@ const GameEngine = (function() {
         getOccupiedRoutes() {
             const routes = [];
             for (const worker of this.workers) {
-                if (worker.status !== 'IDLE' && worker.path.length > 0) {
+                if (worker.status !== 'idle' && worker.path.length > 0) {
                     routes.push({
                         workerId: worker.id,
                         workerName: worker.name,

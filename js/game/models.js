@@ -74,7 +74,8 @@ const GameModels = (function() {
         isPassable() {
             return this.type === CELL_TYPES.AISLE || 
                    this.type === CELL_TYPES.PACKING || 
-                   this.type === CELL_TYPES.SPAWN;
+                   this.type === CELL_TYPES.SPAWN ||
+                   this.type === CELL_TYPES.SHELF;
         }
 
         isOneWay() {

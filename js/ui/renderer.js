@@ -122,7 +122,7 @@ const Renderer = (function() {
                 workerEl.className = 'worker';
                 workerEl.id = `worker-${worker.id}`;
                 
-                if (worker.status !== 'IDLE') {
+                if (worker.status !== 'idle') {
                     workerEl.classList.add('busy');
                 }
                 if (worker.hasCart) {
