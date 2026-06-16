@@ -1418,6 +1418,232 @@ test('40. 多次批量恢复 - 只保留最近一次撤销快照', () => {
     console.log('   ✅ 多次恢复只保留最近一次撤销快照');
 });
 
+test('41. 预检拦截 - 语义坏关卡（订单引用不存在货架）', () => {
+    clearAllCustomLevels();
+
+    const badLevelData = { ...CUSTOM_LEVEL_A };
+    badLevelData.orders = [
+        { id: 'O-BAD', shelfId: 'S-NOT-EXIST', deadline: 120, items: ['商品X'] }
+    ];
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 3,
+        levels: [
+            { id: 'custom-ok-1', levelData: CUSTOM_LEVEL_A, highScore: 100 },
+            { id: 'custom-bad-shelf', levelData: badLevelData, highScore: 200 },
+            { id: 'custom-ok-2', levelData: CUSTOM_LEVEL_B, highScore: 300 }
+        ]
+    };
+
+    const precheck = Storage.precheckBackup(backupData);
+    assert(precheck.totalCount === 3, '总数量应为3');
+    assert(precheck.validCount === 2, '有效数量应为2（2个好关卡）');
+    assert(precheck.newLevels.length === 2, '新增关卡应为2个好关卡');
+    assert(precheck.badEntries.length === 1, '坏条目应为1');
+    assert(precheck.badEntries[0].id === 'custom-bad-shelf', '坏条目ID应正确');
+    assert(precheck.badEntries[0].reason.includes('验证失败'), '坏条目原因应包含验证失败');
+    assert(precheck.badEntries[0].reason.includes('S-NOT-EXIST'), '坏条目原因应包含未知货架ID');
+
+    assert(precheck.newLevels[0].id === 'custom-ok-1', '好关卡1应在新增列表');
+    assert(precheck.newLevels[1].id === 'custom-ok-2', '好关卡2应在新增列表');
+
+    console.log('   总计: %d, 有效: %d, 坏条目: %d',
+        precheck.totalCount, precheck.validCount, precheck.badEntries.length);
+    console.log('   坏条目原因: %s', precheck.badEntries[0].reason);
+    console.log('   ✅ 语义坏关卡预检拦截正确');
+});
+
+test('42. 预检拦截 - 缺少出生点/打包台/货架的坏关卡', () => {
+    clearAllCustomLevels();
+
+    const noSpawnLevel = {
+        id: 'custom-no-spawn',
+        name: '无出生点关卡',
+        mapWidth: 3,
+        mapHeight: 3,
+        mapData: [
+            ['a', 'a', 'a'],
+            ['a', 'a', 'a'],
+            ['a', 'a', 'p']
+        ],
+        workerCount: 1,
+        cartCount: 1,
+        orders: [{ id: 'O-1', shelfId: 'S1', deadline: 100, items: ['x'] }],
+        pickDuration: 2,
+        packDuration: 2,
+        targetScore: 100,
+        minOrdersToPass: 1
+    };
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 1,
+        levels: [
+            { id: 'custom-no-spawn', levelData: noSpawnLevel, highScore: 0 }
+        ]
+    };
+
+    const precheck = Storage.precheckBackup(backupData);
+    assert(precheck.totalCount === 1, '总数量应为1');
+    assert(precheck.validCount === 0, '有效数量应为0');
+    assert(precheck.badEntries.length === 1, '坏条目应为1');
+    assert(precheck.badEntries[0].reason.includes('出生点'), '原因应包含出生点');
+
+    console.log('   坏条目原因: %s', precheck.badEntries[0].reason);
+    console.log('   ✅ 缺少必要元素的坏关卡预检拦截正确');
+});
+
+test('43. 批量恢复 - 混入坏关卡时只导入好关卡', () => {
+    clearAllCustomLevels();
+
+    const badLevelData = { ...CUSTOM_LEVEL_A };
+    badLevelData.orders = [
+        { id: 'O-BAD', shelfId: 'S-INVALID', deadline: 120, items: ['商品X'] }
+    ];
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 3,
+        levels: [
+            { id: 'custom-good-1', levelData: CUSTOM_LEVEL_A, highScore: 500 },
+            { id: 'custom-bad', levelData: badLevelData, highScore: 999 },
+            { id: 'custom-good-2', levelData: CUSTOM_LEVEL_B, highScore: 300 }
+        ]
+    };
+
+    const precheck = Storage.precheckBackup(backupData);
+    assert(precheck.badEntries.length === 1, '预检应发现1个坏条目');
+    assert(precheck.badEntries[0].index === 1, '坏条目索引应为1');
+
+    const decisions = backupData.levels.map((entry, i) => {
+        const isBad = precheck.badEntries.some(b => b.index === i);
+        return isBad ? { action: 'skip' } : { action: 'import' };
+    });
+
+    const result = Storage.executeBatchRestore(backupData, decisions);
+
+    assert(result.success === true, '恢复应成功');
+    assert(result.importedCount === 2, '应只导入2个好关卡');
+    assert(result.failedCount === 0, '坏条目在预检已排除，执行阶段不应失败');
+
+    const levels = Storage.loadCustomLevels();
+    assert(!!levels['custom-good-1'], '好关卡1应存在');
+    assert(!!levels['custom-good-2'], '好关卡2应存在');
+    assert(!levels['custom-bad'], '坏关卡不应存在');
+
+    const progress = Storage.loadProgress();
+    assert(progress.highScores['custom-good-1'] === 500, '好关卡1最高分正确');
+    assert(progress.highScores['custom-good-2'] === 300, '好关卡2最高分正确');
+    assert(progress.highScores['custom-bad'] === undefined, '坏关卡最高分不应存在');
+
+    console.log('   导入: %d, 坏关卡未导入: custom-bad', result.importedCount);
+    console.log('   ✅ 坏关卡不会被导入主菜单');
+});
+
+test('44. 结果摘要 - 坏条目统计正确', () => {
+    clearAllCustomLevels();
+
+    Storage.saveCustomLevel(CUSTOM_LEVEL_A, 'import', 'import');
+
+    const badLevelData = { ...CUSTOM_LEVEL_B };
+    badLevelData.orders = [
+        { id: 'O-BAD', shelfId: 'S-NOT-THERE', deadline: 100, items: ['x'] }
+    ];
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 4,
+        levels: [
+            { id: 'custom-batch-a', levelData: { ...CUSTOM_LEVEL_A, name: '修改A' }, highScore: 999 },
+            { id: 'custom-bad-1', levelData: badLevelData, highScore: 100 },
+            { id: 'custom-new-good', levelData: CUSTOM_LEVEL_B, highScore: 200 },
+            { id: 'level-1', levelData: { id: 'level-1', name: '伪内置' }, highScore: 50 }
+        ]
+    };
+
+    const precheck = Storage.precheckBackup(backupData);
+    assert(precheck.totalCount === 4, '总数量应为4');
+    assert(precheck.validCount === 3, '有效数量应为3（冲突+新增+内置冲突）');
+    assert(precheck.conflictLevels.length === 1, '冲突关卡应为1');
+    assert(precheck.newLevels.length === 1, '新增关卡应为1');
+    assert(precheck.builtinConflict.length === 1, '内置冲突应为1');
+    assert(precheck.badEntries.length === 1, '坏条目应为1');
+
+    console.log('   总计: %d, 有效: %d, 冲突: %d, 新增: %d, 内置: %d, 坏条目: %d',
+        precheck.totalCount, precheck.validCount,
+        precheck.conflictLevels.length, precheck.newLevels.length,
+        precheck.builtinConflict.length, precheck.badEntries.length);
+    console.log('   ✅ 混合场景下各类条目统计正确');
+});
+
+test('45. 原有链路验证 - 有效新增+冲突+撤销+刷新保留正常', () => {
+    clearAllCustomLevels();
+
+    Storage.saveCustomLevel(CUSTOM_LEVEL_A, 'import', 'import');
+    const originalProgress = Storage.loadProgress();
+    originalProgress.highScores['custom-batch-a'] = 100;
+    Storage.saveProgress(originalProgress);
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 2,
+        levels: [
+            { id: 'custom-batch-a', levelData: { ...CUSTOM_LEVEL_A, name: '覆盖后A' }, highScore: 999, completed: true },
+            { id: 'custom-new-ok', levelData: CUSTOM_LEVEL_B, highScore: 500, completed: false }
+        ]
+    };
+
+    const precheck = Storage.precheckBackup(backupData);
+    assert(precheck.conflictLevels.length === 1, '应检测到1个冲突');
+    assert(precheck.newLevels.length === 1, '应检测到1个新增');
+    assert(precheck.badEntries.length === 0, '坏条目应为0');
+
+    const decisions = [
+        { action: 'overwrite' },
+        { action: 'import' }
+    ];
+
+    const result = Storage.executeBatchRestore(backupData, decisions);
+    assert(result.success === true, '恢复应成功');
+    assert(result.importedCount === 2, '应导入2个');
+    assert(result.undoable === true, '应支持撤销');
+
+    const levels = Storage.loadCustomLevels();
+    assert(levels['custom-batch-a'].name === '覆盖后A', '覆盖应生效');
+    assert(!!levels['custom-new-ok'], '新增应生效');
+
+    const progress = Storage.loadProgress();
+    assert(progress.highScores['custom-batch-a'] === 999, '最高分应更新');
+    assert(progress.highScores['custom-new-ok'] === 500, '新关卡最高应正确');
+    assert(progress.completedLevels.includes('custom-batch-a'), '完成状态应更新');
+
+    const undoResult = Storage.undoBatchRestore();
+    assert(undoResult.success === true, '撤销应成功');
+
+    const levelsAfterUndo = Storage.loadCustomLevels();
+    assert(levelsAfterUndo['custom-batch-a'].name === '批量测试关卡A', '撤销后名称应恢复');
+    assert(!levelsAfterUndo['custom-new-ok'], '撤销后新增关卡应移除');
+
+    const progressAfterUndo = Storage.loadProgress();
+    assert(progressAfterUndo.highScores['custom-batch-a'] === 100, '撤销后最高分应恢复');
+
+    console.log('   模拟页面刷新（重新加载）...');
+    const levelsRefresh = Storage.loadCustomLevels();
+    const snapshotRefresh = Storage.getBatchRestoreUndoSnapshot();
+    const lastRestoreRefresh = Storage.getLastBatchRestoreInfo();
+
+    assert(!!levelsRefresh['custom-batch-a'], '刷新后关卡拉应保留');
+    assert(!snapshotRefresh, '刷新后撤销快照已被清除（因已撤销）');
+
+    console.log('   ✅ 原有链路（新增/冲突/撤销/刷新）全部正常');
+});
+
 console.log('\n=== 测试总结 ===');
 const passed = testResults.filter(r => r.passed).length;
 const total = testResults.length;
@@ -1460,4 +1686,8 @@ if (passed < total) {
     console.log('   ✅ 另存为新关卡');
     console.log('   ✅ 内置关卡ID注册');
     console.log('   ✅ 删除后操作记录保留');
+    console.log('   ✅ 预检语义校验（订单引用不存在货架等）');
+    console.log('   ✅ 批量恢复混入坏关卡只导入好的');
+    console.log('   ✅ 混合场景各类条目统计正确');
+    console.log('   ✅ 原有链路完整保留（新增/冲突/撤销/刷新）');
 }

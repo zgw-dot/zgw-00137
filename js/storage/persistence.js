@@ -371,9 +371,8 @@ const Storage = (function() {
                 continue;
             }
 
-            result.validCount++;
-
             if (isBuiltinLevelId(entry.id)) {
+                result.validCount++;
                 result.builtinConflict.push({
                     index: i,
                     id: entry.id,
@@ -382,6 +381,29 @@ const Storage = (function() {
                 });
                 continue;
             }
+
+            let validationErrors = null;
+            try {
+                if (typeof GameModels !== 'undefined' && GameModels.Level && GameModels.Level.fromJSON) {
+                    const level = GameModels.Level.fromJSON(entry.levelData);
+                    validationErrors = level.validate();
+                }
+            } catch (e) {
+                validationErrors = ['关卡数据结构错误: ' + e.message];
+            }
+
+            if (validationErrors && validationErrors.length > 0) {
+                result.badEntries.push({
+                    index: i,
+                    id: entry.id,
+                    name: entry.levelData?.name || entry.id,
+                    reason: '关卡验证失败: ' + validationErrors.join('; '),
+                    rawData: entry
+                });
+                continue;
+            }
+
+            result.validCount++;
 
             const levelEntry = {
                 id: entry.id,
