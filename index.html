@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>仓库拣货调度小游戏</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div id="app">
+        <header class="game-header">
+            <h1>🏭 仓库拣货调度大师</h1>
+            <div class="header-actions">
+                <button id="btn-settings" class="btn btn-secondary">⚙️ 设置</button>
+                <button id="btn-import" class="btn btn-secondary">📥 导入关卡</button>
+                <button id="btn-export" class="btn btn-secondary">📤 导出关卡</button>
+                <button id="btn-replay" class="btn btn-secondary">🎬 回放失败</button>
+            </div>
+        </header>
+
+        <main id="game-container">
+            <div id="main-menu" class="screen active">
+                <div class="menu-content">
+                    <h2>选择关卡</h2>
+                    <div id="level-list" class="level-list"></div>
+                    <div class="menu-info">
+                        <p>🎯 目标：在截止时间内完成所有订单拣货</p>
+                        <p>⚠️ 注意：单向巷道不能同时进入两名拣货员</p>
+                        <p>🚛 连单奖励：同一拣货员连续处理订单可获额外分数</p>
+                    </div>
+                </div>
+            </div>
+
+            <div id="game-screen" class="screen">
+                <div class="game-layout">
+                    <aside class="info-panel">
+                        <div class="panel-section">
+                            <h3>📊 关卡信息</h3>
+                            <div class="info-row">
+                                <span>当前关卡：</span>
+                                <span id="current-level">-</span>
+                            </div>
+                            <div class="info-row">
+                                <span>剩余时间：</span>
+                                <span id="time-remaining" class="highlight">-</span>
+                            </div>
+                            <div class="info-row">
+                                <span>当前得分：</span>
+                                <span id="current-score" class="highlight">0</span>
+                            </div>
+                            <div class="info-row">
+                                <span>连单加成：</span>
+                                <span id="combo-bonus" class="highlight">x1.0</span>
+                            </div>
+                        </div>
+
+                        <div class="panel-section">
+                            <h3>🧑‍🔧 资源状态</h3>
+                            <div class="info-row">
+                                <span>可用推车：</span>
+                                <span id="carts-available" class="highlight">-</span>
+                            </div>
+                            <div class="info-row">
+                                <span>已用推车：</span>
+                                <span id="carts-used">-</span>
+                            </div>
+                            <div class="info-row">
+                                <span>空闲拣货员：</span>
+                                <span id="workers-available">-</span>
+                            </div>
+                            <div class="info-row">
+                                <span>忙碌拣货员：</span>
+                                <span id="workers-busy">-</span>
+                            </div>
+                        </div>
+
+                        <div class="panel-section">
+                            <h3>📋 当前订单</h3>
+                            <div id="orders-list" class="orders-list"></div>
+                        </div>
+
+                        <div class="panel-section">
+                            <h3>🛤️ 占用路线</h3>
+                            <div id="occupied-routes" class="routes-list"></div>
+                        </div>
+
+                        <div class="panel-actions">
+                            <button id="btn-pause" class="btn btn-primary">⏸️ 暂停</button>
+                            <button id="btn-reset" class="btn btn-warning">🔄 重置关卡</button>
+                            <button id="btn-quit" class="btn btn-danger">🚪 返回菜单</button>
+                        </div>
+                    </aside>
+
+                    <section class="game-area">
+                        <div id="warehouse-map" class="warehouse-map"></div>
+                        
+                        <div class="control-panel">
+                            <h3>🎮 操作面板</h3>
+                            <div class="control-group">
+                                <label>选择拣货员：</label>
+                                <select id="worker-select"></select>
+                            </div>
+                            <div class="control-group">
+                                <label>选择目标订单：</label>
+                                <select id="order-select"></select>
+                            </div>
+                            <div class="control-group">
+                                <label>使用推车：</label>
+                                <input type="checkbox" id="use-cart" checked>
+                            </div>
+                            <button id="btn-dispatch" class="btn btn-success btn-large">🚀 派遣拣货</button>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <div id="result-screen" class="screen">
+                <div class="result-content">
+                    <h2 id="result-title">关卡完成！</h2>
+                    <div class="result-stats">
+                        <div class="stat-item">
+                            <span class="stat-label">最终得分</span>
+                            <span id="result-score" class="stat-value">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">完成订单</span>
+                            <span id="result-orders" class="stat-value">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">最高连单</span>
+                            <span id="result-combo" class="stat-value">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">超时订单</span>
+                            <span id="result-timeouts" class="stat-value">0</span>
+                        </div>
+                    </div>
+                    <div class="result-actions">
+                        <button id="btn-next-level" class="btn btn-success">➡️ 下一关</button>
+                        <button id="btn-retry" class="btn btn-primary">🔄 重试</button>
+                        <button id="btn-back-menu" class="btn btn-secondary">🏠 返回菜单</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="replay-screen" class="screen">
+                <div class="replay-content">
+                    <h2>🎬 失败回放</h2>
+                    <div class="replay-controls">
+                        <button id="btn-replay-play" class="btn btn-primary">▶️ 播放</button>
+                        <button id="btn-replay-pause" class="btn btn-secondary">⏸️ 暂停</button>
+                        <button id="btn-replay-speed" class="btn btn-secondary">⏩ 1x</button>
+                        <button id="btn-replay-exit" class="btn btn-danger">❌ 退出回放</button>
+                    </div>
+                    <div id="replay-info" class="replay-info"></div>
+                    <div id="replay-map" class="warehouse-map"></div>
+                    <div id="replay-log" class="replay-log"></div>
+                </div>
+            </div>
+
+            <div id="settings-modal" class="modal">
+                <div class="modal-content">
+                    <h2>⚙️ 游戏设置</h2>
+                    <div class="setting-item">
+                        <label>游戏速度：</label>
+                        <input type="range" id="setting-speed" min="0.5" max="3" step="0.5" value="1">
+                        <span id="speed-value">1.0x</span>
+                    </div>
+                    <div class="setting-item">
+                        <label>音效开关：</label>
+                        <input type="checkbox" id="setting-sound" checked>
+                    </div>
+                    <div class="setting-item">
+                        <label>自动暂停：</label>
+                        <input type="checkbox" id="setting-autopause" checked>
+                    </div>
+                    <div class="setting-item">
+                        <label>显示网格：</label>
+                        <input type="checkbox" id="setting-grid" checked>
+                    </div>
+                    <button id="btn-save-settings" class="btn btn-success">💾 保存设置</button>
+                    <button id="btn-close-settings" class="btn btn-secondary">关闭</button>
+                </div>
+            </div>
+
+            <div id="import-modal" class="modal">
+                <div class="modal-content">
+                    <h2>📥 导入关卡</h2>
+                    <p>粘贴关卡JSON配置：</p>
+                    <textarea id="import-textarea" rows="10" placeholder='{"id": "custom-1", "name": "自定义关卡", ...}'></textarea>
+                    <button id="btn-do-import" class="btn btn-success">✅ 导入</button>
+                    <button id="btn-cancel-import" class="btn btn-secondary">取消</button>
+                </div>
+            </div>
+
+            <div id="export-modal" class="modal">
+                <div class="modal-content">
+                    <h2>📤 导出关卡</h2>
+                    <p>选择要导出的关卡：</p>
+                    <select id="export-level-select"></select>
+                    <textarea id="export-textarea" rows="10" readonly></textarea>
+                    <button id="btn-copy-export" class="btn btn-primary">📋 复制到剪贴板</button>
+                    <button id="btn-close-export" class="btn btn-secondary">关闭</button>
+                </div>
+            </div>
+
+            <div id="notification" class="notification hidden"></div>
+        </main>
+    </div>
+
+    <script src="js/storage/persistence.js"></script>
+    <script src="js/game/models.js"></script>
+    <script src="js/game/collision.js"></script>
+    <script src="js/game/scoring.js"></script>
+    <script src="js/game/engine.js"></script>
+    <script src="js/replay/recorder.js"></script>
+    <script src="js/ui/info-panel.js"></script>
+    <script src="js/ui/renderer.js"></script>
+    <script src="js/ui/controls.js"></script>
+    <script src="js/levels/level1.js"></script>
+    <script src="js/levels/level2.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
