@@ -1394,16 +1394,27 @@ test('40. 多次批量恢复 - 只保留最近一次撤销快照', () => {
 
     const result1 = Storage.executeBatchRestore(backup1, [{ action: 'import' }]);
     assert(result1.success === true, '第一次恢复应成功');
+    assert(result1.importedCount === 1, '第一次恢复应导入1个关卡');
+    const levelsAfter1 = Storage.loadCustomLevels();
+    assert(!!levelsAfter1['custom-multi-1'], '第一次恢复后关卡1应存在');
 
     const snapshot1 = Storage.getBatchRestoreUndoSnapshot();
-    const snapshot1Time = snapshot1?.restoreTime;
+    const snapshot1LevelsJson = JSON.stringify(snapshot1.beforeLevels);
+
+    const start = Date.now();
+    while (Date.now() === start) {}
 
     const result2 = Storage.executeBatchRestore(backup2, [{ action: 'import' }]);
     assert(result2.success === true, '第二次恢复应成功');
+    assert(result2.importedCount === 1, '第二次恢复应导入1个关卡');
+    const levelsAfter2 = Storage.loadCustomLevels();
+    assert(!!levelsAfter2['custom-multi-1'], '第二次恢复后关卡1应仍在');
+    assert(!!levelsAfter2['custom-multi-2'], '第二次恢复后关卡2应新增');
 
     const snapshot2 = Storage.getBatchRestoreUndoSnapshot();
     assert(!!snapshot2, '第二次恢复后应有快照');
-    assert(snapshot2.restoreTime !== snapshot1Time, '快照应更新为第二次恢复的');
+    assert(JSON.stringify(snapshot2.beforeLevels) !== snapshot1LevelsJson,
+        '快照内容应不同（第二次恢复前的关卡集合包含关卡1）');
 
     const undoResult = Storage.undoBatchRestore();
     assert(undoResult.success === true, '撤销应成功');
@@ -1644,6 +1655,138 @@ test('45. 原有链路验证 - 有效新增+冲突+撤销+刷新保留正常', (
     console.log('   ✅ 原有链路（新增/冲突/撤销/刷新）全部正常');
 });
 
+test('46. 数据层兜底 - 恶意篡改坏条目决策为import仍被拦截', () => {
+    clearAllCustomLevels();
+
+    const badLevelData = { ...CUSTOM_LEVEL_A };
+    badLevelData.orders = [
+        { id: 'O-EVIL', shelfId: 'S-FAKE', deadline: 120, items: ['商品X'] }
+    ];
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 2,
+        levels: [
+            { id: 'custom-hack-bad', levelData: badLevelData, highScore: 9999 },
+            { id: 'custom-hack-good', levelData: CUSTOM_LEVEL_B, highScore: 500 }
+        ]
+    };
+
+    const decisions = [
+        { action: 'import' },
+        { action: 'import' }
+    ];
+
+    const result = Storage.executeBatchRestore(backupData, decisions);
+
+    assert(result.success === true, '恢复应成功');
+    assert(result.importedCount === 1, '只应导入1个好关卡');
+    assert(result.skippedCount === 1, '应跳过1个坏关卡');
+    assert(result.failedCount === 0, '不应有失败（坏条目是语义跳过不是执行失败）');
+
+    assert(result.results.skipped.some(s => s.id === 'custom-hack-bad'), '坏条目应出现在skipped列表');
+    assert(result.results.skipped.find(s => s.id === 'custom-hack-bad').reason.includes('校验失败'),
+        'skipped条目的原因应包含校验失败');
+    assert(result.results.skipped.find(s => s.id === 'custom-hack-bad').reason.includes('S-FAKE'),
+        'skipped条目的原因应包含具体的坏货架ID');
+
+    const levels = Storage.loadCustomLevels();
+    assert(!levels['custom-hack-bad'], '坏关卡绝对不能写进主菜单关卡列表');
+    assert(!!levels['custom-hack-good'], '好关卡应正常写入');
+
+    const progress = Storage.loadProgress();
+    assert(progress.highScores['custom-hack-bad'] === undefined, '坏关卡不能留下最高分');
+    assert(progress.highScores['custom-hack-good'] === 500, '好关卡最高分正常写入');
+
+    assert(!result.results.imported.some(i => i.id === 'custom-hack-bad'),
+        '最终恢复结果摘要的imported列表不能出现坏条目');
+
+    console.log('   决策强行import了坏关卡custom-hack-bad');
+    console.log('   数据层二次校验仍拦住，skipped原因:', result.results.skipped.find(s => s.id === 'custom-hack-bad').reason);
+    console.log('   主菜单关卡数: %d, 坏关卡写入: %s',
+        Object.keys(levels).length,
+        Object.keys(levels).includes('custom-hack-bad') ? '是' : '否');
+    console.log('   ✅ 数据层兜底有效：恶意篡改决策也写不进去');
+});
+
+test('47. 数据层兜底 - overwrite坏关卡也被拦住+save_as_new坏关卡也被拦住', () => {
+    clearAllCustomLevels();
+
+    Storage.saveCustomLevel(CUSTOM_LEVEL_A, 'import', 'import');
+
+    const badOverwrite = { ...CUSTOM_LEVEL_A };
+    badOverwrite.orders = [
+        { id: 'O-BAD', shelfId: 'S-NOT-THERE', deadline: 100, items: ['x'] }
+    ];
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 2,
+        levels: [
+            { id: 'custom-batch-a', levelData: badOverwrite, highScore: 777 },
+            { id: 'custom-saveas-bad', levelData: badOverwrite, highScore: 888 }
+        ]
+    };
+
+    const decisions = [
+        { action: 'overwrite' },
+        { action: 'save_as_new' }
+    ];
+
+    const result = Storage.executeBatchRestore(backupData, decisions);
+
+    assert(result.success === true, '恢复应成功');
+    assert(result.importedCount === 0, '两个坏关卡都不能导入');
+    assert(result.skippedCount === 2, '两个坏关卡都应被语义跳过');
+
+    const levels = Storage.loadCustomLevels();
+    assert(levels['custom-batch-a'].name === '批量测试关卡A', '原关卡A不能被坏数据覆盖');
+    assert(!Object.keys(levels).some(k => k.startsWith('custom-saveas-bad')), '不能生成坏关卡的副本');
+
+    const progress = Storage.loadProgress();
+    assert(progress.highScores['custom-batch-a'] !== 777, '原关卡A最高分不能被坏数据的777覆盖');
+
+    console.log('   尝试overwrite+save_as_new两个语义坏关卡');
+    console.log('   imported: %d, skipped: %d', result.importedCount, result.skippedCount);
+    console.log('   原关卡名称保持: %s（未被覆盖）', levels['custom-batch-a'].name);
+    console.log('   ✅ overwrite和save_as_new的语义坏关卡也被数据层拦住');
+});
+
+test('48. 数据层兜底 - 决策数组完全缺失时默认skip+decisions留空也安全', () => {
+    clearAllCustomLevels();
+
+    const backupData = {
+        version: 1,
+        exportedAt: Date.now(),
+        levelCount: 2,
+        levels: [
+            { id: 'custom-ok-x', levelData: CUSTOM_LEVEL_A, highScore: 100 },
+            { id: 'custom-ok-y', levelData: CUSTOM_LEVEL_B, highScore: 200 }
+        ]
+    };
+
+    const result1 = Storage.executeBatchRestore(backupData, undefined);
+    assert(result1.success === true, '恢复应成功');
+    assert(result1.skippedCount === 2, '无decisions数组时默认全部skip');
+    assert(result1.importedCount === 0, '无decisions时不能导入任何东西');
+
+    const levels1 = Storage.loadCustomLevels();
+    assert(Object.keys(levels1).length === 0, 'decisions完全缺失时不能写关卡');
+
+    const result2 = Storage.executeBatchRestore(backupData, {});
+    assert(result2.success === true, '空decisions对象也应成功');
+    assert(result2.skippedCount === 2, '空对象decisions也默认全部skip');
+
+    const levels2 = Storage.loadCustomLevels();
+    assert(Object.keys(levels2).length === 0, '空decisions也不能写关卡');
+
+    console.log('   decisions=undefined: skipped=%d, levels=%d', result1.skippedCount, Object.keys(levels1).length);
+    console.log('   decisions={}:        skipped=%d, levels=%d', result2.skippedCount, Object.keys(levels2).length);
+    console.log('   ✅ decisions缺失/留空时安全默认skip，不写入任何东西');
+});
+
 console.log('\n=== 测试总结 ===');
 const passed = testResults.filter(r => r.passed).length;
 const total = testResults.length;
@@ -1690,4 +1833,7 @@ if (passed < total) {
     console.log('   ✅ 批量恢复混入坏关卡只导入好的');
     console.log('   ✅ 混合场景各类条目统计正确');
     console.log('   ✅ 原有链路完整保留（新增/冲突/撤销/刷新）');
+    console.log('   ✅ 数据层兜底：恶意篡改坏条目决策为import仍被拦');
+    console.log('   ✅ 数据层兜底：overwrite/save_as_new坏关卡也被拦');
+    console.log('   ✅ 数据层兜底：decisions缺失/留空时默认skip安全');
 }

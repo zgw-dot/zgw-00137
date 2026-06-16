@@ -474,6 +474,25 @@ const Storage = (function() {
                     continue;
                 }
 
+                let semanticErrors = null;
+                try {
+                    if (typeof GameModels !== 'undefined' && GameModels.Level && GameModels.Level.fromJSON) {
+                        const level = GameModels.Level.fromJSON(entry.levelData);
+                        semanticErrors = level.validate();
+                    }
+                } catch (e) {
+                    semanticErrors = ['关卡数据结构错误: ' + e.message];
+                }
+
+                if (semanticErrors && semanticErrors.length > 0) {
+                    results.skipped.push({
+                        id: entry.id,
+                        name: entry.levelData?.name || entry.id,
+                        reason: '校验失败: ' + semanticErrors.join('; ')
+                    });
+                    continue;
+                }
+
                 switch (decision.action) {
                     case 'skip':
                         results.skipped.push({

@@ -906,15 +906,30 @@ const UIController = (function() {
             this._restoreDecisions = {};
 
             const allLevels = parseResult.data.levels;
+            const precheck = this._precheckResult;
+
             for (let i = 0; i < allLevels.length; i++) {
                 const entry = allLevels[i];
-                if (entry && entry.id && !Storage.isBuiltinLevelId(entry.id)) {
-                    const existingLevels = Storage.loadCustomLevels();
-                    if (existingLevels[entry.id]) {
-                        this._restoreDecisions[i] = { action: 'skip' };
-                    } else {
-                        this._restoreDecisions[i] = { action: 'import' };
-                    }
+                if (!entry || !entry.id) continue;
+
+                const isBad = precheck.badEntries.some(b => b.index === i);
+                const isBuiltin = precheck.builtinConflict.some(b => b.index === i);
+
+                if (isBad || isBuiltin) {
+                    this._restoreDecisions[i] = { action: 'skip' };
+                    continue;
+                }
+
+                if (Storage.isBuiltinLevelId(entry.id)) {
+                    this._restoreDecisions[i] = { action: 'skip' };
+                    continue;
+                }
+
+                const existingLevels = Storage.loadCustomLevels();
+                if (existingLevels[entry.id]) {
+                    this._restoreDecisions[i] = { action: 'skip' };
+                } else {
+                    this._restoreDecisions[i] = { action: 'import' };
                 }
             }
 
