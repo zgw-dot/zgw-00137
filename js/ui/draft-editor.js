@@ -544,38 +544,119 @@ const DraftEditor = (function() {
                 this.ui.infoPanel.showNotification(`请先修复 ${errors.length} 个校验错误再发布`, 'error');
                 return;
             }
-            if (Storage.isBuiltinLevelId(config.id)) {
-                this._showPublishConflict(config, 'builtin');
-                return;
-            }
+
+            const builtinConflict = Storage.isBuiltinLevelId(config.id);
             const customLevels = Storage.loadCustomLevels();
-            if (customLevels[config.id]) {
-                this._showPublishConflict(config, 'id_conflict', customLevels[config.id]);
+            const idConflict = !builtinConflict && !!customLevels[config.id];
+            const nameConflict = Storage.checkNameConflict(config.name);
+
+            if (builtinConflict) {
+                this._showPublishConflict(config, 'builtin', null, nameConflict.hasConflict ? nameConflict : null);
                 return;
             }
+
+            if (idConflict && nameConflict.hasConflict) {
+                this._showPublishConflict(config, 'both_conflict', customLevels[config.id], nameConflict);
+                return;
+            }
+
+            if (idConflict) {
+                this._showPublishConflict(config, 'id_conflict', customLevels[config.id], null);
+                return;
+            }
+
+            if (nameConflict.hasConflict) {
+                this._showPublishConflict(config, 'name_conflict', null, nameConflict);
+                return;
+            }
+
             this._doPublish(config, 'publish');
         }
 
-        _showPublishConflict(config, type, existingData) {
+        _showPublishConflict(config, type, existingData, nameConflictData) {
             const builtinDiv = document.getElementById('publish-conflict-builtin');
             const diffDiv = document.getElementById('publish-conflict-diff');
             const renameDiv = document.getElementById('publish-conflict-rename');
-            const actionsDiv = document.getElementById('publish-conflict-actions');
+            const nameDiv = document.getElementById('publish-conflict-name');
+            const reasonDiv = document.getElementById('publish-conflict-reason');
+            const typeBadge = document.getElementById('publish-conflict-type');
+            const titleEl = document.getElementById('publish-conflict-title');
+
             document.getElementById('publish-new-id').value = config.id + '-copy';
             document.getElementById('publish-new-name').value = config.name + ' (副本)';
 
             this.ui._pendingPublishConfig = JSON.parse(JSON.stringify(config));
+            this.ui._pendingPublishConflictType = type;
+            this.ui._pendingPublishNameConflict = nameConflictData;
 
-            if (type === 'builtin') {
-                builtinDiv.classList.remove('hidden');
-                diffDiv.classList.add('hidden');
-                renameDiv.classList.add('hidden');
-                document.getElementById('btn-publish-overwrite').style.display = 'none';
-            } else {
-                builtinDiv.classList.add('hidden');
-                diffDiv.classList.remove('hidden');
-                document.getElementById('btn-publish-overwrite').style.display = '';
+            builtinDiv.classList.add('hidden');
+            diffDiv.classList.add('hidden');
+            renameDiv.classList.add('hidden');
+            nameDiv.classList.add('hidden');
+            reasonDiv.classList.remove('hidden');
 
+            typeBadge.classList.remove('hidden', 'id-conflict', 'name-conflict', 'both-conflict');
+
+            const reasonSelect = document.getElementById('publish-conflict-reason-select');
+            const overwriteBtn = document.getElementById('btn-publish-overwrite');
+            const changeIdBtn = document.getElementById('btn-publish-change-id');
+            const saveAsBtn = document.getElementById('btn-publish-save-as-new');
+            const backBtn = document.getElementById('btn-publish-back-draft');
+
+            overwriteBtn.style.display = '';
+            changeIdBtn.style.display = '';
+            saveAsBtn.style.display = '';
+            backBtn.style.display = '';
+
+            switch (type) {
+                case 'builtin':
+                    titleEl.textContent = '⚠️ 内置关卡冲突';
+                    typeBadge.textContent = '🔒 内置冲突';
+                    typeBadge.classList.add('id-conflict');
+                    builtinDiv.classList.remove('hidden');
+                    overwriteBtn.style.display = 'none';
+                    reasonSelect.value = 'save_as_new';
+                    break;
+
+                case 'id_conflict':
+                    titleEl.textContent = '⚠️ 发布冲突 - ID 重复';
+                    typeBadge.textContent = '🆔 ID 冲突';
+                    typeBadge.classList.add('id-conflict');
+                    diffDiv.classList.remove('hidden');
+                    reasonSelect.value = 'id_duplicate';
+                    break;
+
+                case 'name_conflict':
+                    titleEl.textContent = '⚠️ 发布冲突 - 名称重复';
+                    typeBadge.textContent = '📛 名称冲突';
+                    typeBadge.classList.add('name-conflict');
+                    nameDiv.classList.remove('hidden');
+                    document.getElementById('conflict-name-display').textContent = config.name;
+                    const conflictDetail = nameConflictData?.isBuiltin
+                        ? `该名称已被内置关卡 "${nameConflictData.conflictLevelId}" 使用`
+                        : `该名称已被自定义关卡 "${nameConflictData?.conflictLevelId}" 使用`;
+                    document.getElementById('conflict-name-detail').textContent = conflictDetail;
+                    changeIdBtn.style.display = '';
+                    overwriteBtn.style.display = '';
+                    reasonSelect.value = 'name_duplicate';
+                    break;
+
+                case 'both_conflict':
+                    titleEl.textContent = '⚠️ 发布冲突 - ID 和名称均重复';
+                    typeBadge.textContent = '⚡ 双重冲突';
+                    typeBadge.classList.add('both-conflict');
+                    diffDiv.classList.remove('hidden');
+                    nameDiv.classList.remove('hidden');
+                    document.getElementById('conflict-name-display').textContent = config.name;
+                    const bothDetail = nameConflictData?.isBuiltin
+                        ? `该名称已被内置关卡 "${nameConflictData.conflictLevelId}" 使用`
+                        : `该名称已被自定义关卡 "${nameConflictData?.conflictLevelId}" 使用`;
+                    document.getElementById('conflict-name-detail').textContent = bothDetail;
+                    reasonSelect.value = 'both_duplicate';
+                    break;
+            }
+
+            if (existingData && type !== 'name_conflict') {
                 const diffBody = document.getElementById('publish-diff-body');
                 diffBody.innerHTML = '';
 
@@ -613,18 +694,121 @@ const DraftEditor = (function() {
             document.getElementById('publish-conflict-modal').classList.add('active');
         }
 
-        _doPublish(config, operationType) {
+        _doPublish(config, operationType, extraRecordData) {
             const existing = Storage.loadCustomLevels()[config.id];
             const existingForUndo = existing ? JSON.parse(JSON.stringify(existing)) : null;
 
             Storage.savePublishUndoSnapshot(config, existingForUndo);
             Storage.saveCustomLevel(config, 'draft_publish', operationType);
 
+            const recordData = {
+                levelId: config.id,
+                levelName: config.name,
+                operationType: operationType,
+                success: true,
+                wasOverwrite: !!existingForUndo,
+                conflictType: this.ui._pendingPublishConflictType || null,
+                ...extraRecordData
+            };
+
+            if (this.ui._pendingPublishConflictType) {
+                const reasonSelect = document.getElementById('publish-conflict-reason-select');
+                recordData.reason = reasonSelect?.value || extraRecordData?.reason || null;
+                recordData.resolution = extraRecordData?.resolution || this._getResolutionFromOperation(operationType);
+            }
+
+            Storage.savePublishRecord(recordData);
+
             Storage.deleteDraft(this.currentDraftId);
 
+            this.ui._pendingPublishConflictType = null;
+            this.ui._pendingPublishNameConflict = null;
+
             document.getElementById('publish-conflict-modal').classList.remove('active');
+            document.getElementById('publish-conflict-rename').classList.add('hidden');
+            document.getElementById('publish-conflict-type').classList.add('hidden');
+            const btn = document.getElementById('btn-publish-save-as-new');
+            if (btn) btn.textContent = '📝 改名另存';
+
             this.ui.infoPanel.showNotification(`🎉 关卡 "${config.name}" 发布成功！草稿已自动删除`, 'success');
             this.close();
+        }
+
+        _getResolutionFromOperation(operationType) {
+            const map = {
+                'publish_overwrite': 'overwrite',
+                'publish_save_as_new': 'save_as_new',
+                'publish_change_id': 'change_id',
+                'publish': null
+            };
+            return map[operationType] || null;
+        }
+
+        _publishChangeId() {
+            const cfg = this.ui._pendingPublishConfig;
+            if (!cfg) return;
+
+            const renameDiv = document.getElementById('publish-conflict-rename');
+            renameDiv.classList.remove('hidden');
+            document.getElementById('publish-rename-hint').textContent = '请输入新的关卡 ID（保留原名称）：';
+            document.getElementById('publish-new-name').value = cfg.name;
+            document.getElementById('publish-new-name').readOnly = true;
+
+            const self = this;
+            const originalBtn = document.getElementById('btn-publish-change-id');
+            const originalText = originalBtn.textContent;
+            originalBtn.textContent = '✅ 确认换 ID';
+
+            const doChangeId = () => {
+                const newId = document.getElementById('publish-new-id').value.trim();
+                const newName = document.getElementById('publish-new-name').value.trim();
+
+                if (!newId) {
+                    self.ui.infoPanel.showNotification('请输入新的关卡 ID', 'warning');
+                    return;
+                }
+                if (!/^[a-zA-Z0-9_-]+$/.test(newId)) {
+                    self.ui.infoPanel.showNotification('关卡 ID 只能包含字母、数字、下划线和连字符', 'error');
+                    return;
+                }
+                if (Storage.isBuiltinLevelId(newId)) {
+                    self.ui.infoPanel.showNotification('该 ID 与内置关卡冲突，请换一个', 'error');
+                    return;
+                }
+                const existing = Storage.loadCustomLevels();
+                if (existing[newId]) {
+                    self.ui.infoPanel.showNotification('该 ID 已被其他自定义关卡占用，请换一个', 'error');
+                    return;
+                }
+
+                const nameCheck = Storage.checkNameConflict(newName, newId);
+                if (nameCheck.hasConflict) {
+                    self.ui.infoPanel.showNotification(`名称 "${newName}" 仍然与其他关卡冲突`, 'error');
+                    return;
+                }
+
+                const newCfg = JSON.parse(JSON.stringify(cfg));
+                newCfg.id = newId;
+                newCfg.name = newName;
+
+                self.ui._closePublishConflict();
+                originalBtn.removeEventListener('click', doChangeId);
+                originalBtn.textContent = originalText;
+                document.getElementById('publish-new-name').readOnly = false;
+                renameDiv.classList.add('hidden');
+
+                self._doPublish(newCfg, 'publish_save_as_new', {
+                    resolution: 'change_id',
+                    newId: newId,
+                    newName: newName,
+                    originalId: cfg.id,
+                    originalName: cfg.name
+                });
+            };
+
+            originalBtn.removeEventListener('click', this._lastChangeIdHandler);
+            originalBtn.addEventListener('click', doChangeId);
+            this._lastChangeIdHandler = doChangeId;
         }
     }
 

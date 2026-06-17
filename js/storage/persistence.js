@@ -12,7 +12,8 @@ const Storage = (function() {
         BATCH_RESTORE_HISTORY: 'warehouse_game_batch_restore_history',
         DRAFTS: 'warehouse_game_drafts',
         PUBLISH_UNDO_SNAPSHOT: 'warehouse_game_publish_undo_snapshot',
-        LAST_PUBLISH: 'warehouse_game_last_publish'
+        LAST_PUBLISH: 'warehouse_game_last_publish',
+        PUBLISH_HISTORY: 'warehouse_game_publish_history'
     };
 
     const BACKUP_FORMAT_VERSION = 1;
@@ -1159,6 +1160,11 @@ const Storage = (function() {
                 localStorage.setItem(KEYS.LAST_PUBLISH, JSON.stringify(lastPublish));
             }
 
+            const lastRecord = getLastPublishRecord();
+            if (lastRecord && !lastRecord.undone) {
+                markPublishRecordUndone(lastRecord.recordId);
+            }
+
             saveLastOperation({
                 type: 'undo_publish',
                 levelId: snapshot.levelId,
@@ -1199,6 +1205,93 @@ const Storage = (function() {
         } catch (e) {
             return null;
         }
+    }
+
+    function checkNameConflict(levelName, excludeLevelId) {
+        try {
+            const customLevels = loadCustomLevels();
+            for (const levelId in customLevels) {
+                if (excludeLevelId && levelId === excludeLevelId) continue;
+                const level = customLevels[levelId];
+                if (level.name && level.name === levelName) {
+                    return {
+                        hasConflict: true,
+                        conflictLevelId: levelId,
+                        conflictLevelName: level.name
+                    };
+                }
+            }
+            const builtinLevels = [LEVEL_1, LEVEL_2];
+            for (const bl of builtinLevels) {
+                if (excludeLevelId && bl.id === excludeLevelId) continue;
+                if (bl.name && bl.name === levelName) {
+                    return {
+                        hasConflict: true,
+                        conflictLevelId: bl.id,
+                        conflictLevelName: bl.name,
+                        isBuiltin: true
+                    };
+                }
+            }
+            return { hasConflict: false };
+        } catch (e) {
+            console.error('Failed to check name conflict:', e);
+            return { hasConflict: false, error: e.message };
+        }
+    }
+
+    function savePublishRecord(record) {
+        try {
+            const history = loadPublishHistory();
+            const fullRecord = {
+                recordId: 'publish-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+                timestamp: Date.now(),
+                ...record
+            };
+            history.unshift(fullRecord);
+            if (history.length > 50) history.length = 50;
+            localStorage.setItem(KEYS.PUBLISH_HISTORY, JSON.stringify(history));
+            return { success: true, recordId: fullRecord.recordId, record: fullRecord };
+        } catch (e) {
+            console.error('Failed to save publish record:', e);
+            return { success: false, error: e.message };
+        }
+    }
+
+    function loadPublishHistory() {
+        try {
+            const data = localStorage.getItem(KEYS.PUBLISH_HISTORY);
+            return data ? JSON.parse(data) : [];
+        } catch (e) {
+            console.error('Failed to load publish history:', e);
+            return [];
+        }
+    }
+
+    function markPublishRecordUndone(recordId) {
+        try {
+            const history = loadPublishHistory();
+            const idx = history.findIndex(r => r.recordId === recordId);
+            if (idx !== -1) {
+                history[idx].undone = true;
+                history[idx].undoneAt = Date.now();
+                localStorage.setItem(KEYS.PUBLISH_HISTORY, JSON.stringify(history));
+                return { success: true };
+            }
+            return { success: false, reason: 'record_not_found' };
+        } catch (e) {
+            console.error('Failed to mark publish record undone:', e);
+            return { success: false, error: e.message };
+        }
+    }
+
+    function getLastPublishRecord() {
+        const history = loadPublishHistory();
+        return history.find(r => !r.undone) || history[0] || null;
+    }
+
+    function clearPublishHistory() {
+        localStorage.removeItem(KEYS.PUBLISH_HISTORY);
     }
 
     return {
@@ -1245,6 +1338,12 @@ const Storage = (function() {
         undoPublish,
         getPublishUndoSnapshot,
         clearPublishUndoSnapshot,
-        getLastPublishInfo
+        getLastPublishInfo,
+        checkNameConflict,
+        savePublishRecord,
+        loadPublishHistory,
+        markPublishRecordUndone,
+        getLastPublishRecord,
+        clearPublishHistory
     };
 })();

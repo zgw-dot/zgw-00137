@@ -13,6 +13,7 @@
             <div class="header-actions">
                 <button id="btn-drafts" class="btn btn-primary">📝 草稿箱</button>
                 <button id="btn-new-draft" class="btn btn-success">➕ 新建草稿</button>
+                <button id="btn-publish-workbench" class="btn btn-primary">🚀 发布工作台</button>
                 <button id="btn-settings" class="btn btn-secondary">⚙️ 设置</button>
                 <button id="btn-import" class="btn btn-secondary">📥 导入关卡</button>
                 <button id="btn-export" class="btn btn-secondary">📤 导出关卡</button>
@@ -541,10 +542,15 @@
 
             <div id="publish-conflict-modal" class="modal">
                 <div class="modal-content modal-wide">
-                    <h2>⚠️ 发布冲突</h2>
+                    <h2 id="publish-conflict-title">⚠️ 发布冲突</h2>
+                    <div id="publish-conflict-type" class="conflict-type-badge hidden"></div>
                     <div id="publish-conflict-builtin" class="conflict-builtin-warning hidden">
                         <p>🚫 该关卡 ID 与内置关卡冲突，无法覆盖内置关卡。</p>
                         <p>请修改关卡 ID 后重试，或选择"另存为新关卡"。</p>
+                    </div>
+                    <div id="publish-conflict-name" class="conflict-name-warning hidden">
+                        <p>⚠️ 检测到<strong>名称冲突</strong>：已有关卡使用名称 "<span id="conflict-name-display"></span>"</p>
+                        <p id="conflict-name-detail"></p>
                     </div>
                     <div id="publish-conflict-diff" class="conflict-diff hidden">
                         <p>检测到同 ID 关卡已存在，以下字段将发生变化：</p>
@@ -556,7 +562,7 @@
                         </table>
                     </div>
                     <div id="publish-conflict-rename" class="conflict-rename hidden">
-                        <p>请输入新的关卡 ID 和名称另存为新关卡：</p>
+                        <p id="publish-rename-hint">请输入新的关卡 ID 和名称另存为新关卡：</p>
                         <div class="form-grid">
                             <div class="form-item">
                                 <label>新关卡 ID：</label>
@@ -568,11 +574,90 @@
                             </div>
                         </div>
                     </div>
+                    <div id="publish-conflict-reason" class="conflict-reason hidden">
+                        <label>选择原因（将写入发布记录）：</label>
+                        <select id="publish-conflict-reason-select">
+                            <option value="id_duplicate">ID 重复，选择覆盖</option>
+                            <option value="name_duplicate">名称重复，选择覆盖</option>
+                            <option value="both_duplicate">ID 和名称均重复，选择覆盖</option>
+                            <option value="save_as_new">冲突，选择另存为新关卡</option>
+                            <option value="change_id">名称重复，仅更换 ID 重发</option>
+                            <option value="back_to_draft">退回草稿继续修改</option>
+                        </select>
+                    </div>
                     <div class="conflict-actions" id="publish-conflict-actions">
                         <button id="btn-publish-overwrite" class="btn btn-warning">🔄 直接覆盖</button>
+                        <button id="btn-publish-change-id" class="btn btn-primary">🆔 换 ID 重发</button>
                         <button id="btn-publish-save-as-new" class="btn btn-primary">📝 改名另存</button>
                         <button id="btn-publish-back-draft" class="btn btn-secondary">↩️ 回草稿继续修</button>
                         <button id="btn-cancel-publish-conflict" class="btn btn-danger">取消发布</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="publish-workbench-screen" class="screen">
+                <div class="publish-workbench-container">
+                    <div class="publish-workbench-header">
+                        <h2>🚀 关卡发布工作台</h2>
+                        <div class="publish-workbench-header-actions">
+                            <button id="btn-publish-history" class="btn btn-secondary">📋 发布记录</button>
+                            <button id="btn-publish-workbench-back" class="btn btn-secondary">⬅️ 返回主菜单</button>
+                        </div>
+                    </div>
+                    <div class="publish-workbench-body">
+                        <div class="publish-workbench-left">
+                            <div class="workbench-section">
+                                <h3>📝 待发布草稿</h3>
+                                <div id="workbench-draft-list" class="workbench-draft-list"></div>
+                            </div>
+                        </div>
+                        <div class="publish-workbench-right">
+                            <div class="workbench-section">
+                                <h3>🔍 发布预检</h3>
+                                <div id="workbench-precheck" class="workbench-precheck">
+                                    <div class="precheck-empty">请从左侧选择一个草稿开始发布流程</div>
+                                </div>
+                            </div>
+                            <div class="workbench-section">
+                                <h3>📊 发布概览</h3>
+                                <div id="workbench-stats" class="workbench-stats">
+                                    <div class="stat-card">
+                                        <span class="stat-number" id="stat-draft-count">0</span>
+                                        <span class="stat-label">草稿总数</span>
+                                    </div>
+                                    <div class="stat-card">
+                                        <span class="stat-number" id="stat-published-count">0</span>
+                                        <span class="stat-label">已发布关卡</span>
+                                    </div>
+                                    <div class="stat-card">
+                                        <span class="stat-number" id="stat-today-publish">0</span>
+                                        <span class="stat-label">今日发布</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="publish-history-modal" class="modal">
+                <div class="modal-content modal-wide modal-extra-wide">
+                    <h2>📋 发布记录</h2>
+                    <div class="publish-history-toolbar">
+                        <div class="history-filter">
+                            <label>筛选：</label>
+                            <select id="publish-history-filter">
+                                <option value="all">全部</option>
+                                <option value="success">成功发布</option>
+                                <option value="conflict">冲突处理</option>
+                                <option value="undone">已撤销</option>
+                            </select>
+                        </div>
+                        <button id="btn-clear-publish-history" class="btn btn-danger btn-small">🗑️ 清空记录</button>
+                    </div>
+                    <div id="publish-history-list" class="publish-history-list"></div>
+                    <div class="modal-actions">
+                        <button id="btn-close-publish-history" class="btn btn-secondary">关闭</button>
                     </div>
                 </div>
             </div>
@@ -593,6 +678,7 @@
     <script src="js/levels/level1.js"></script>
     <script src="js/levels/level2.js"></script>
     <script src="js/ui/draft-editor.js"></script>
+    <script src="js/ui/publish-workbench.js"></script>
     <script src="js/main.js"></script>
 </body>
 </html>
