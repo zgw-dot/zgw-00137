@@ -8,417 +8,622 @@ const PublishWorkbench = (function() {
         return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
     }
 
-    function isToday(ts) {
-        if (!ts) return false;
-        const d = new Date(ts);
-        const today = new Date();
-        return d.getFullYear() === today.getFullYear()
-            && d.getMonth() === today.getMonth()
-            && d.getDate() === today.getDate();
-    }
+    const PUBLISH_TYPES = {
+        publish_new: { label: '新发布', icon: '🚀', class: 'success' },
+        publish_overwrite: { label: '覆盖发布', icon: '🔄', class: 'warning' },
+        publish_save_as_new: { label: '另存发布', icon: '📝', class: 'primary' },
+        publish_rename: { label: '改名发布', icon: '✏️', class: 'info' },
+        conflict_back_to_draft: { label: '退回草稿', icon: '↩️', class: 'secondary' },
+        conflict_cancel: { label: '取消发布', icon: '❌', class: 'danger' },
+        undo_publish: { label: '撤销发布', icon: '↩️', class: 'danger' }
+    };
+
+    const CONFLICT_TYPES = {
+        id_conflict: 'ID 冲突',
+        name_conflict: '名称冲突',
+        both_conflict: 'ID 和名称都冲突',
+        builtin_conflict: '内置关卡冲突',
+        no_conflict: '无冲突'
+    };
 
     class Workbench {
         constructor(uiController) {
             this.ui = uiController;
-            this.selectedDraftId = null;
-            this.currentFilter = 'all';
+            this._currentConflict = null;
+            this._pendingPublish = null;
+            this._currentRecordId = null;
+            this._conflictCheckResult = null;
         }
 
-        init() {
-            this._bindEvents();
-        }
+        checkAndPublish(draftId, levelConfig, sourceType) {
+            const check = Storage.checkLevelConflict(levelConfig.id, levelConfig.name);
+            this._conflictCheckResult = check;
 
-        _bindEvents() {
-            const self = this;
+            if (check.hasConflict) {
+                this._currentConflict = {
+                    type: check.conflictType,
+                    levelConfig: JSON.parse(JSON.stringify(levelConfig)),
+                    draftId: draftId,
+                    existingLevel: check.existingLevel,
+                    nameConflicts: check.conflictType === 'name_conflict' || check.conflictType === 'both_conflict'
+                        ? [{ levelData: check.existingLevel, id: check.existingLevel?.id }]
+                        : [],
+                    conflictDetails: check.conflictDetails || [],
+                    isBuiltin: check.isBuiltin || false,
+                    startTime: Date.now()
+                };
 
-            document.getElementById('btn-publish-workbench-back').addEventListener('click', () => {
-                self.close();
-            });
-
-            document.getElementById('btn-publish-history').addEventListener('click', () => {
-                self._openPublishHistory();
-            });
-
-            document.getElementById('btn-close-publish-history').addEventListener('click', () => {
-                self._closePublishHistory();
-            });
-
-            document.getElementById('publish-history-filter').addEventListener('change', (e) => {
-                self.currentFilter = e.target.value;
-                self._renderPublishHistory();
-            });
-
-            document.getElementById('btn-clear-publish-history').addEventListener('click', () => {
-                if (confirm('确定清空所有发布记录吗？此操作不可撤销。')) {
-                    Storage.clearPublishHistory();
-                    self._renderPublishHistory();
-                    self.ui.infoPanel.showNotification('发布记录已清空', 'success');
+                if (this.ui && this.ui.showPublishConflict && typeof this.ui.showPublishConflict === 'function') {
+                    try { this.ui.showPublishConflict(this._currentConflict); } catch (_) {}
                 }
+                this._tryRenderConflictModal();
+
+                return {
+                    success: false,
+                    conflict: true,
+                    conflictType: check.conflictType,
+                    conflictDetails: check.conflictDetails || [],
+                    existingLevel: check.existingLevel
+                };
+            }
+
+            return this._executePublish(draftId, levelConfig, 'publish_new', {
+                conflictType: 'no_conflict',
+                decision: 'publish',
+                reason: '无冲突，直接发布',
+                conflictDetails: []
             });
         }
 
-        open() {
-            this.selectedDraftId = null;
-            this._show();
-            this._renderDraftList();
-            this._renderStats();
-            this._renderPrecheckEmpty();
-        }
+        _tryRenderConflictModal() {
+            try {
+                const modal = document.getElementById('publish-conflict-modal');
+                if (!modal || !this._currentConflict) return;
 
-        close() {
-            this.selectedDraftId = null;
-            this.ui._showScreen('main-menu');
-            this.ui._loadLevels();
-            this.ui._renderMainMenu();
-            this.ui._renderDraftList();
-            this.ui._restoreLastOperation();
-            this.ui._restoreUndoBar();
-            this.ui._restoreBatchUndoBar();
-            this.ui._restorePublishUndoBar();
-            this.ui._renderLastRestoreCard();
-        }
+                const data = this._currentConflict;
+                const levelConfig = data.levelConfig;
 
-        _show() {
-            this.ui._showScreen('publish-workbench-screen');
-        }
+                const builtinEl = document.getElementById('publish-conflict-builtin');
+                const diffEl = document.getElementById('publish-conflict-diff');
+                const renameEl = document.getElementById('publish-conflict-rename');
+                const titleEl = modal.querySelector('h2');
+                const btnOverwrite = document.getElementById('btn-publish-overwrite');
 
-        _renderStats() {
-            const drafts = Storage.loadDrafts();
-            const customLevels = Storage.loadCustomLevels();
-            const history = Storage.loadPublishHistory();
+                if (builtinEl) builtinEl.classList.add('hidden');
+                if (diffEl) diffEl.classList.add('hidden');
+                if (renameEl) renameEl.classList.add('hidden');
 
-            const draftCount = Object.keys(drafts).length;
-            const publishedCount = Object.keys(customLevels).length;
-            const todayCount = history.filter(r => !r.undone && isToday(r.timestamp)).length;
-
-            document.getElementById('stat-draft-count').textContent = draftCount;
-            document.getElementById('stat-published-count').textContent = publishedCount;
-            document.getElementById('stat-today-publish').textContent = todayCount;
-        }
-
-        _renderDraftList() {
-            const list = document.getElementById('workbench-draft-list');
-            const drafts = Storage.loadDrafts();
-            const ids = Object.keys(drafts);
-
-            if (ids.length === 0) {
-                list.innerHTML = '<div class="workbench-draft-item-empty">暂无草稿 — 先去「新建草稿」创建一个吧</div>';
-                return;
-            }
-
-            ids.sort((a, b) => {
-                const ta = drafts[a]._meta?.lastModifiedTime || 0;
-                const tb = drafts[b]._meta?.lastModifiedTime || 0;
-                return tb - ta;
-            });
-
-            const self = this;
-            list.innerHTML = ids.map(id => {
-                const d = drafts[id];
-                const meta = d._meta || {};
-                const v = meta.version || '?';
-                const mod = meta.lastModifiedTime ? formatTimestamp(meta.lastModifiedTime) : '-';
-                const mapSize = `${d.mapWidth || '?'}×${d.mapHeight || '?'}`;
-                const orderCount = (d.orders || []).length;
-                const selected = id === self.selectedDraftId ? 'selected' : '';
-                return `
-                    <div class="workbench-draft-item ${selected}" data-draft-id="${id}">
-                        <div class="workbench-draft-item-title">
-                            <span class="workbench-draft-item-name">${d.name || '未命名草稿'}</span>
-                            <span class="workbench-draft-item-version">v${v}</span>
-                        </div>
-                        <div class="workbench-draft-item-meta">
-                            <span>🆔 ${d.id || '(未设置)'}</span>
-                            <span>📦 ${orderCount} 订单</span>
-                            <span>🗺️ ${mapSize}</span>
-                            <span>🕐 ${mod}</span>
-                        </div>
-                    </div>
-                `;
-            }).join('');
-
-            list.querySelectorAll('.workbench-draft-item').forEach(el => {
-                el.addEventListener('click', () => {
-                    self._selectDraft(el.dataset.draftId);
-                });
-            });
-        }
-
-        _selectDraft(draftId) {
-            this.selectedDraftId = draftId;
-            this._renderDraftList();
-            this._renderPrecheck(draftId);
-        }
-
-        _renderPrecheckEmpty() {
-            document.getElementById('workbench-precheck').innerHTML =
-                '<div class="precheck-empty">请从左侧选择一个草稿开始发布流程</div>';
-        }
-
-        _renderPrecheck(draftId) {
-            const draft = Storage.loadDraft(draftId);
-            if (!draft) {
-                this._renderPrecheckEmpty();
-                return;
-            }
-
-            const precheck = document.getElementById('workbench-precheck');
-
-            const idCheck = this._checkId(draft.id);
-            const nameCheck = Storage.checkNameConflict(draft.name);
-            const validation = this._validateDraft(draft);
-
-            let html = '<div class="precheck-content">';
-
-            html += `<div class="precheck-item-row">
-                <span class="precheck-item-label">关卡 ID</span>
-                <span class="precheck-item-value ${idCheck.status}">${draft.id || '(未设置)'}</span>
-            </div>`;
-
-            html += `<div class="precheck-item-row">
-                <span class="precheck-item-label">关卡名称</span>
-                <span class="precheck-item-value ${nameCheck.hasConflict ? 'warning' : 'ok'}">${draft.name || '(未命名)'}</span>
-            </div>`;
-
-            if (idCheck.status === 'error') {
-                html += `<div class="validation-error">❌ ${idCheck.message}</div>`;
-            }
-            if (nameCheck.hasConflict) {
-                html += `<div class="validation-warn">⚠️ 名称 "${draft.name}" 已被关卡 "${nameCheck.conflictLevelId}" 使用</div>`;
-            }
-
-            if (validation.errors.length > 0) {
-                validation.errors.forEach(e => {
-                    html += `<div class="validation-error">❌ ${e}</div>`;
-                });
-            }
-            if (validation.warnings.length > 0) {
-                validation.warnings.forEach(w => {
-                    html += `<div class="validation-warn">⚠️ ${w}</div>`;
-                });
-            }
-
-            const canPublish = validation.errors.length === 0 && draft.id && draft.name;
-
-            html += `<div class="precheck-actions">
-                <button class="btn btn-secondary btn-small" id="btn-edit-draft">✏️ 编辑草稿</button>
-                <button class="btn btn-success btn-small" id="btn-publish-from-workbench" ${canPublish ? '' : 'disabled'}>🚀 发布关卡</button>
-            </div>`;
-
-            html += '</div>';
-            precheck.innerHTML = html;
-
-            const self = this;
-            document.getElementById('btn-edit-draft').addEventListener('click', () => {
-                self.close();
-                self.ui.draftEditor.openEdit(draftId);
-            });
-
-            if (canPublish) {
-                document.getElementById('btn-publish-from-workbench').addEventListener('click', () => {
-                    self._publishDraft(draftId);
-                });
-            }
-        }
-
-        _checkId(id) {
-            if (!id) {
-                return { status: 'error', message: '关卡 ID 不能为空' };
-            }
-            if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
-                return { status: 'error', message: '关卡 ID 只能包含字母、数字、下划线和连字符' };
-            }
-            if (Storage.isBuiltinLevelId(id)) {
-                return { status: 'error', message: `ID "${id}" 与内置关卡冲突` };
-            }
-            const customLevels = Storage.loadCustomLevels();
-            if (customLevels[id]) {
-                return { status: 'warning', message: `ID "${id}" 已被自定义关卡使用` };
-            }
-            return { status: 'ok' };
-        }
-
-        _validateDraft(draft) {
-            const errors = [];
-            const warnings = [];
-
-            if (!draft.id) errors.push('关卡 ID 不能为空');
-            else if (!/^[a-zA-Z0-9_-]+$/.test(draft.id)) errors.push(`关卡 ID "${draft.id}" 格式不正确`);
-
-            if (!draft.name) errors.push('关卡名称不能为空');
-            if (!draft.timeLimit || draft.timeLimit <= 0) errors.push('时间限制必须大于 0');
-            if (!draft.workerCount || draft.workerCount <= 0) errors.push('拣货员数量必须大于 0');
-            if (draft.cartCount === undefined || draft.cartCount < 0) errors.push('推车数量不能为负数');
-            if (!draft.mapWidth || draft.mapWidth < 4 || draft.mapWidth > 20) errors.push('地图宽度应在 4-20 之间');
-            if (!draft.mapHeight || draft.mapHeight < 4 || draft.mapHeight > 20) errors.push('地图高度应在 4-20 之间');
-
-            const orders = draft.orders || [];
-            if (orders.length === 0) {
-                warnings.push('还没有创建订单');
-            } else if (draft.minOrdersToPass > orders.length) {
-                errors.push(`通关最少订单数(${draft.minOrdersToPass})不能超过订单总数(${orders.length})`);
-            }
-
-            if (!draft.targetScore || draft.targetScore === 0) {
-                warnings.push('目标分数为 0，通关评级可能不准确');
-            }
-
-            for (let i = 0; i < orders.length; i++) {
-                const o = orders[i];
-                if (!o.id) errors.push(`订单 #${i + 1} 的 ID 不能为空`);
-                for (let j = i + 1; j < orders.length; j++) {
-                    if (o.id && orders[j].id && o.id === orders[j].id) {
-                        errors.push(`存在重复的订单 ID：${o.id}`);
+                if (data.type === 'builtin_conflict') {
+                    if (titleEl) titleEl.textContent = '⚠️ 内置关卡冲突';
+                    if (builtinEl) builtinEl.classList.remove('hidden');
+                    if (btnOverwrite) btnOverwrite.style.display = 'none';
+                } else {
+                    if (titleEl) titleEl.textContent = '⚠️ 发布冲突检测';
+                    if (btnOverwrite) btnOverwrite.style.display = '';
+                    if (diffEl) {
+                        this._renderConflictDiffTo(data, diffEl);
+                        diffEl.classList.remove('hidden');
                     }
                 }
+
+                const idInput = document.getElementById('publish-new-id');
+                const nameInput = document.getElementById('publish-new-name');
+                if (idInput) idInput.value = levelConfig.id + '-new';
+                if (nameInput) nameInput.value = levelConfig.name + ' (新版)';
+
+                modal.classList.add('active');
+            } catch (e) {}
+        }
+
+        _renderConflictDiffTo(data, diffEl) {
+            const diffBody = document.getElementById('publish-diff-body');
+            if (!diffBody) return;
+            diffBody.innerHTML = '';
+
+            const levelConfig = data.levelConfig;
+            let existingLevel = data.existingLevel;
+
+            if (!existingLevel && data.nameConflicts && data.nameConflicts.length > 0) {
+                existingLevel = data.nameConflicts[0].levelData;
             }
 
-            return { errors, warnings };
+            if (!existingLevel) return;
+
+            const existingData = { ...existingLevel };
+            delete existingData._meta;
+
+            const fields = [
+                { key: 'id', label: '关卡 ID' },
+                { key: 'name', label: '关卡名称' },
+                { key: 'difficulty', label: '难度' },
+                { key: 'timeLimit', label: '时间限制' },
+                { key: 'workerCount', label: '拣货员数' },
+                { key: 'cartCount', label: '推车数' },
+                { key: 'targetScore', label: '目标分数' }
+            ];
+
+            fields.forEach(f => {
+                const oldVal = existingData[f.key];
+                const newVal = levelConfig[f.key];
+                const changed = String(oldVal) !== String(newVal);
+                const row = document.createElement('tr');
+                row.innerHTML = `<td>${f.label}</td><td class="${changed ? 'changed' : ''}">${oldVal !== undefined ? oldVal : '-'}</td><td class="${changed ? 'changed' : ''}">${newVal !== undefined ? newVal : '-'}</td>`;
+                diffBody.appendChild(row);
+            });
+
+            const oldCount = (existingData.orders || []).length;
+            const newCount = (levelConfig.orders || []).length;
+            const changed = oldCount !== newCount;
+            const row = document.createElement('tr');
+            row.innerHTML = `<td>订单数</td><td class="${changed ? 'changed' : ''}">${oldCount}</td><td class="${changed ? 'changed' : ''}">${newCount}</td>`;
+            diffBody.appendChild(row);
+
+            if (data.nameConflicts && data.nameConflicts.length > 1) {
+                const conflictRow = document.createElement('tr');
+                conflictRow.innerHTML = `<td colspan="3" style="color:#e53e3e;font-weight:bold;">⚠️ 有 ${data.nameConflicts.length} 个关卡使用了相同名称</td>`;
+                diffBody.appendChild(conflictRow);
+            }
         }
 
-        _publishDraft(draftId) {
-            const draft = Storage.loadDraft(draftId);
-            if (!draft) return;
+        handleOverwrite() {
+            if (!this._currentConflict) return { success: false, reason: 'no_conflict' };
 
-            this.ui.draftEditor.currentDraftId = draftId;
-            this.ui.draftEditor.draft = { ...draft };
-            delete this.ui.draftEditor.draft._meta;
-            this.ui.draftEditor.publish();
+            const data = this._currentConflict;
+            if (data.type === 'builtin_conflict') {
+                return { success: false, reason: 'builtin_conflict', type: 'publish_overwrite' };
+            }
+            const config = JSON.parse(JSON.stringify(data.levelConfig));
+
+            const result = this._executePublish(data.draftId, config, 'publish_overwrite', {
+                conflictType: data.type,
+                decision: 'overwrite',
+                reason: '选择覆盖现有关卡',
+                conflictDetails: data.conflictDetails || []
+            });
+
+            this._closeConflictPanel();
+
+            if (this.ui && this.ui.refreshLevelList && typeof this.ui.refreshLevelList === 'function') {
+                try { this.ui.refreshLevelList(); } catch (_) {}
+            }
+            if (this.ui && this.ui._afterPublish && typeof this.ui._afterPublish === 'function') {
+                try { this.ui._afterPublish(); } catch (_) {}
+            }
+
+            return {
+                ...result,
+                type: 'publish_overwrite'
+            };
         }
 
-        _openPublishHistory() {
-            this.currentFilter = 'all';
-            document.getElementById('publish-history-filter').value = 'all';
-            this._renderPublishHistory();
-            document.getElementById('publish-history-modal').classList.add('active');
+        handleSaveAsNew(newName, newId) {
+            if (!this._currentConflict) return { success: false, reason: 'no_conflict' };
+
+            const data = this._currentConflict;
+            let finalName = newName;
+            let finalId = newId;
+
+            if (finalName === undefined && finalId === undefined) {
+                const idInput = document.getElementById('publish-new-id');
+                const nameInput = document.getElementById('publish-new-name');
+                if (idInput) finalId = idInput.value.trim();
+                if (nameInput) finalName = nameInput.value.trim();
+            }
+
+            if (!finalId) {
+                if (this.ui && this.ui.showNotification) {
+                    try { this.ui.showNotification('请输入新的关卡 ID', 'warning'); } catch (_) {}
+                }
+                return { success: false, reason: 'missing_id' };
+            }
+            if (!finalName) {
+                if (this.ui && this.ui.showNotification) {
+                    try { this.ui.showNotification('请输入新的关卡名称', 'warning'); } catch (_) {}
+                }
+                return { success: false, reason: 'missing_name' };
+            }
+            if (!/^[a-zA-Z0-9_-]+$/.test(finalId)) {
+                if (this.ui && this.ui.showNotification) {
+                    try { this.ui.showNotification('关卡 ID 只能包含字母、数字、下划线和连字符', 'error'); } catch (_) {}
+                }
+                return { success: false, reason: 'invalid_id' };
+            }
+            if (Storage.isBuiltinLevelId(finalId)) {
+                if (this.ui && this.ui.showNotification) {
+                    try { this.ui.showNotification('该 ID 与内置关卡冲突，请换一个', 'error'); } catch (_) {}
+                }
+                return { success: false, reason: 'builtin_conflict' };
+            }
+            const existing = Storage.loadCustomLevels();
+            if (existing[finalId]) {
+                if (this.ui && this.ui.showNotification) {
+                    try { this.ui.showNotification('该 ID 已被占用，请换一个', 'error'); } catch (_) {}
+                }
+                return { success: false, reason: 'id_exists' };
+            }
+
+            const config = JSON.parse(JSON.stringify(data.levelConfig));
+            config.id = finalId;
+            config.name = finalName;
+
+            const result = this._executePublish(data.draftId, config, 'publish_save_as_new', {
+                conflictType: data.type,
+                decision: 'save_as_new',
+                reason: `改名另存为新关卡 (原ID: ${data.levelConfig.id}, 原名称: ${data.levelConfig.name})`,
+                originalId: data.levelConfig.id,
+                originalName: data.levelConfig.name,
+                newLevelId: finalId,
+                newLevelName: finalName,
+                conflictDetails: data.conflictDetails || []
+            });
+
+            this._closeConflictPanel();
+
+            if (this.ui && this.ui.refreshLevelList && typeof this.ui.refreshLevelList === 'function') {
+                try { this.ui.refreshLevelList(); } catch (_) {}
+            }
+            if (this.ui && this.ui._afterPublish && typeof this.ui._afterPublish === 'function') {
+                try { this.ui._afterPublish(); } catch (_) {}
+            }
+
+            return {
+                ...result,
+                type: 'publish_save_as_new',
+                newLevelId: finalId,
+                newLevelName: finalName
+            };
         }
 
-        _closePublishHistory() {
-            document.getElementById('publish-history-modal').classList.remove('active');
+        handleBackToDraft(reason) {
+            if (!this._currentConflict) return { success: false, reason: 'no_conflict' };
+
+            const data = this._currentConflict;
+            const backReason = reason || '选择退回草稿继续修改';
+
+            Storage.savePublishRecord({
+                type: 'conflict_back_to_draft',
+                levelId: data.levelConfig.id,
+                levelName: data.levelConfig.name,
+                draftId: data.draftId,
+                sourceType: data.draftId ? 'draft' : 'unknown',
+                conflictType: data.type,
+                decision: 'back_to_draft',
+                reason: backReason,
+                result: '退回草稿，未发布',
+                success: false,
+                undone: false,
+                undoable: false,
+                conflictDetails: data.conflictDetails || []
+            });
+
+            this._closeConflictPanel();
+
+            if (this.ui && this.ui.showNotification && typeof this.ui.showNotification === 'function') {
+                try { this.ui.showNotification('已退回草稿，可继续修改后再发布', 'info'); } catch (_) {}
+            }
+            if (this.ui && this.ui.getDraftEditor && typeof this.ui.getDraftEditor === 'function') {
+                try {
+                    const de = this.ui.getDraftEditor();
+                    if (de && de.close && typeof de.close === 'function') de.close();
+                } catch (_) {}
+            }
+
+            return {
+                success: false,
+                type: 'conflict_back_to_draft',
+                reason: backReason,
+                levelId: data.levelConfig.id,
+                levelName: data.levelConfig.name
+            };
         }
 
-        _renderPublishHistory() {
-            const list = document.getElementById('publish-history-list');
+        handleCancel() {
+            if (!this._currentConflict) return { success: false, reason: 'no_conflict' };
+
+            const data = this._currentConflict;
+
+            Storage.savePublishRecord({
+                type: 'conflict_cancel',
+                levelId: data.levelConfig.id,
+                levelName: data.levelConfig.name,
+                draftId: data.draftId,
+                sourceType: data.draftId ? 'draft' : 'unknown',
+                conflictType: data.type,
+                decision: 'cancel',
+                reason: '用户取消发布',
+                result: '发布已取消',
+                success: false,
+                undone: false,
+                undoable: false,
+                conflictDetails: data.conflictDetails || []
+            });
+
+            this._closeConflictPanel();
+
+            return {
+                success: false,
+                type: 'conflict_cancel',
+                levelId: data.levelConfig.id,
+                levelName: data.levelConfig.name
+            };
+        }
+
+        showRenameSection() {
+            try {
+                const renameDiv = document.getElementById('publish-conflict-rename');
+                if (renameDiv) renameDiv.classList.remove('hidden');
+                const btn = document.getElementById('btn-publish-save-as-new');
+                if (btn) btn.textContent = '✅ 确认另存';
+                if (this.ui && this.ui.showPublishRenameSection && typeof this.ui.showPublishRenameSection === 'function') {
+                    try { this.ui.showPublishRenameSection(); } catch (_) {}
+                }
+            } catch (_) {}
+        }
+
+        _closeConflictPanel() {
+            try {
+                const modal = document.getElementById('publish-conflict-modal');
+                if (modal) modal.classList.remove('active');
+                const renameDiv = document.getElementById('publish-conflict-rename');
+                if (renameDiv) renameDiv.classList.add('hidden');
+                const btn = document.getElementById('btn-publish-save-as-new');
+                if (btn) btn.textContent = '📝 改名另存';
+                if (this.ui && this.ui.closePublishConflict && typeof this.ui.closePublishConflict === 'function') {
+                    try { this.ui.closePublishConflict(); } catch (_) {}
+                }
+            } catch (_) {}
+            this._currentConflict = null;
+        }
+
+        _executePublish(draftId, levelConfig, publishType, metadata) {
+            const existing = Storage.loadCustomLevels()[levelConfig.id];
+            const existingForUndo = existing ? JSON.parse(JSON.stringify(existing)) : null;
+
+            const snapshot = {
+                levelId: levelConfig.id,
+                levelName: levelConfig.name,
+                newLevelData: JSON.parse(JSON.stringify(levelConfig)),
+                previousLevelData: existingForUndo,
+                previousProgress: Storage.loadProgress(),
+                publishedAt: Date.now(),
+                publishType: publishType,
+                draftId: draftId,
+                metadata: metadata
+            };
+            Storage.savePublishUndoSnapshot(levelConfig, existingForUndo);
+            Storage.saveExtendedPublishSnapshot(snapshot);
+
+            const wasOverwrite = !!existingForUndo;
+            Storage.saveCustomLevel(levelConfig, 'draft_publish', publishType);
+
+            const recordResult = Storage.savePublishRecord({
+                type: publishType,
+                levelId: levelConfig.id,
+                levelName: levelConfig.name,
+                draftId: draftId,
+                sourceType: draftId ? 'draft' : 'unknown',
+                wasOverwrite: wasOverwrite,
+                conflictType: metadata?.conflictType || 'no_conflict',
+                decision: metadata?.decision || 'publish',
+                reason: metadata?.reason || '直接发布',
+                result: '发布成功',
+                success: true,
+                undoable: true,
+                undone: false,
+                previousLevelData: existingForUndo,
+                newLevelData: JSON.parse(JSON.stringify(levelConfig)),
+                originalId: metadata?.originalId || null,
+                originalName: metadata?.originalName || null,
+                newLevelId: metadata?.newLevelId || null,
+                newLevelName: metadata?.newLevelName || null,
+                conflictDetails: metadata?.conflictDetails || []
+            });
+
+            this._currentRecordId = recordResult.success ? recordResult.record.recordId : null;
+
+            try { Storage.deleteDraft(draftId); } catch (_) {}
+
+            if (this.ui && this.ui.refreshLevelList && typeof this.ui.refreshLevelList === 'function') {
+                try { this.ui.refreshLevelList(); } catch (_) {}
+            }
+            if (this.ui && this.ui.updateLastOpHint && typeof this.ui.updateLastOpHint === 'function') {
+                try { this.ui.updateLastOpHint(); } catch (_) {}
+            }
+
+            return {
+                success: true,
+                levelId: levelConfig.id,
+                levelName: levelConfig.name,
+                wasOverwrite: wasOverwrite,
+                publishType: publishType,
+                type: publishType,
+                recordId: this._currentRecordId,
+                conflict: false,
+                conflictType: metadata?.conflictType || 'no_conflict'
+            };
+        }
+
+        undoLastPublish() {
+            const snapshot = Storage.getExtendedPublishSnapshot();
+            if (!snapshot) {
+                return { success: false, reason: 'no_undo_snapshot' };
+            }
+
+            const result = Storage.undoPublish();
+            if (!result.success) {
+                return result;
+            }
+
+            const lastPublish = Storage.getLastPublishInfo();
+            let undoneRecordId = null;
+
+            if (lastPublish?.recordId) {
+                const markRes = Storage.markPublishUndone(lastPublish.recordId);
+                if (markRes.success) undoneRecordId = lastPublish.recordId;
+            }
+
+            const undoRecordResult = Storage.savePublishRecord({
+                type: 'undo_publish',
+                levelId: snapshot.levelId,
+                levelName: snapshot.levelName,
+                draftId: snapshot.draftId || null,
+                sourceType: snapshot.draftId ? 'draft' : 'unknown',
+                wasOverwrite: !!snapshot.previousLevelData,
+                conflictType: null,
+                decision: 'undo',
+                reason: '用户撤销发布',
+                result: snapshot.previousLevelData ? '已恢复到之前版本' : '已移除新发布的关卡',
+                success: true,
+                undoable: false,
+                undone: false,
+                previousLevelData: snapshot.newLevelData,
+                restoredLevelData: snapshot.previousLevelData,
+                undoneRecordId: undoneRecordId,
+                conflictDetails: []
+            });
+
+            Storage.clearExtendedPublishSnapshot();
+
+            if (this.ui && this.ui.refreshLevelList && typeof this.ui.refreshLevelList === 'function') {
+                try { this.ui.refreshLevelList(); } catch (_) {}
+            }
+            if (this.ui && this.ui.updateLastOpHint && typeof this.ui.updateLastOpHint === 'function') {
+                try { this.ui.updateLastOpHint(); } catch (_) {}
+            }
+
+            return {
+                success: true,
+                levelId: result.levelId,
+                levelName: result.levelName,
+                wasOverwrite: result.wasOverwrite,
+                type: 'undo_publish',
+                undoneRecordId: undoneRecordId,
+                recordId: undoRecordResult.success ? undoRecordResult.record.recordId : null
+            };
+        }
+
+        renderPublishHistory(container) {
             const history = Storage.loadPublishHistory();
 
-            let filtered = history;
-            if (this.currentFilter === 'success') {
-                filtered = history.filter(r => !r.undone && r.success);
-            } else if (this.currentFilter === 'conflict') {
-                filtered = history.filter(r => !r.undone && r.conflictType);
-            } else if (this.currentFilter === 'undone') {
-                filtered = history.filter(r => r.undone);
-            }
+            if (!container) return;
 
-            if (filtered.length === 0) {
-                list.innerHTML = '<div class="publish-history-empty">暂无发布记录</div>';
+            if (history.length === 0) {
+                container.innerHTML = '<div class="history-empty">暂无发布记录 — 发布关卡后会在这里显示</div>';
                 return;
             }
 
-            const typeLabels = {
-                publish: { label: '新发布', class: 'publish' },
-                publish_overwrite: { label: '覆盖发布', class: 'publish_overwrite' },
-                publish_save_as_new: { label: '另存为新', class: 'publish_save_as_new' },
-                conflict_resolved: { label: '冲突处理', class: 'conflict_resolved' },
-                undo_publish: { label: '撤销发布', class: 'undo_publish' }
-            };
+            container.innerHTML = history.map(record => {
+                const typeInfo = PUBLISH_TYPES[record.type] || { label: record.type, icon: '📋', class: 'secondary' };
+                const statusClass = record.success ? 'success' : 'failed';
+                const undoneBadge = record.undone ? '<span class="record-badge undone">已撤销</span>' : '';
+                const undoableBadge = record.undoable && !record.undone ? '<span class="record-badge undoable">可撤销</span>' : '';
 
-            const self = this;
-            list.innerHTML = filtered.map(r => {
-                const typeInfo = typeLabels[r.operationType] || { label: r.operationType, class: 'publish' };
-                const undoneClass = r.undone ? 'undone' : '';
-
-                let detailsHtml = '';
-
-                if (r.conflictType) {
-                    const conflictLabels = {
-                        id_conflict: 'ID 冲突',
-                        name_conflict: '名称冲突',
-                        both_conflict: 'ID 和名称冲突',
-                        builtin: '内置关卡冲突'
-                    };
-                    detailsHtml += `<div class="publish-history-item-detail-row">
-                        <span class="publish-history-item-detail-label">冲突：</span>
-                        <span>${conflictLabels[r.conflictType] || r.conflictType}</span>
-                    </div>`;
+                let conflictInfo = '';
+                if (record.conflictType && record.conflictType !== 'no_conflict') {
+                    const conflictLabel = CONFLICT_TYPES[record.conflictType] || record.conflictType;
+                    conflictInfo = `<div class="record-conflict">⚠️ 冲突类型: ${conflictLabel}</div>`;
                 }
 
-                if (r.resolution) {
-                    const resolutionLabels = {
-                        overwrite: '选择覆盖',
-                        save_as_new: '另存为新关卡',
-                        change_id: '更换 ID 重发',
-                        change_name: '更换名称重发',
-                        back_to_draft: '退回草稿继续修改',
-                        cancel: '取消发布'
-                    };
-                    detailsHtml += `<div class="publish-history-item-detail-row">
-                        <span class="publish-history-item-detail-label">处理：</span>
-                        <span>${resolutionLabels[r.resolution] || r.resolution}</span>
-                    </div>`;
-                }
-
-                if (r.reason) {
-                    detailsHtml += `<div class="publish-history-item-detail-row">
-                        <span class="publish-history-item-detail-label">原因：</span>
-                        <span class="publish-history-item-reason">${r.reason}</span>
-                    </div>`;
-                }
-
-                if (r.wasOverwrite !== undefined) {
-                    detailsHtml += `<div class="publish-history-item-detail-row">
-                        <span class="publish-history-item-detail-label">类型：</span>
-                        <span>${r.wasOverwrite ? '覆盖原有' : '全新发布'}</span>
-                    </div>`;
-                }
-
-                if (r.newId && r.newId !== r.levelId) {
-                    detailsHtml += `<div class="publish-history-item-detail-row">
-                        <span class="publish-history-item-detail-label">新 ID：</span>
-                        <span class="publish-history-item-id">${r.newId}</span>
-                    </div>`;
-                }
-                if (r.newName && r.newName !== r.levelName) {
-                    detailsHtml += `<div class="publish-history-item-detail-row">
-                        <span class="publish-history-item-detail-label">新名称：</span>
-                        <span>${r.newName}</span>
-                    </div>`;
-                }
-
-                let undoneHtml = '';
-                if (r.undone) {
-                    undoneHtml = `<div class="publish-history-undone-label">
-                        ✖️ 已撤销 · ${formatTimestamp(r.undoneAt)}
-                    </div>`;
+                let decisionInfo = '';
+                if (record.decision) {
+                    decisionInfo = `<div class="record-decision">📌 处理方式: ${record.reason || record.decision}</div>`;
                 }
 
                 return `
-                    <div class="publish-history-item ${undoneClass}">
-                        <div class="publish-history-item-header">
-                            <div class="publish-history-item-title">
-                                <span class="publish-history-item-name">${r.levelName || r.levelId}</span>
-                                <span class="publish-history-item-id">${r.levelId}</span>
-                                <span class="publish-history-item-type ${typeInfo.class}">${typeInfo.label}</span>
+                    <div class="publish-record record-${statusClass}${record.undone ? ' record-undone' : ''}" data-record-id="${record.recordId}">
+                        <div class="record-header">
+                            <div class="record-type-icon ${typeInfo.class}">${typeInfo.icon}</div>
+                            <div class="record-main-info">
+                                <div class="record-title">
+                                    <span class="record-level-name">${record.levelName || '未命名'}</span>
+                                    <span class="record-type-label">${typeInfo.label}</span>
+                                    ${undoneBadge}
+                                    ${undoableBadge}
+                                </div>
+                                <div class="record-meta">
+                                    <span>🆔 ${record.levelId || '-'}</span>
+                                    <span>🕐 ${formatTimestamp(record.timestamp)}</span>
+                                </div>
                             </div>
-                            <span class="publish-history-item-time">${formatTimestamp(r.timestamp)}</span>
+                            <div class="record-result-badge ${record.success ? 'badge-success' : 'badge-failed'}">
+                                ${record.success ? '成功' : '失败'}
+                            </div>
                         </div>
-                        <div class="publish-history-item-details">
-                            ${detailsHtml}
-                        </div>
-                        ${undoneHtml}
+                        ${conflictInfo}
+                        ${decisionInfo}
+                        ${record.result ? `<div class="record-result">📄 结果: ${record.result}</div>` : ''}
                     </div>
                 `;
             }).join('');
         }
 
-        refresh() {
-            this._renderDraftList();
-            this._renderStats();
-            if (this.selectedDraftId) {
-                this._renderPrecheck(this.selectedDraftId);
+        openPublishHistoryModal() {
+            const container = document.getElementById('publish-history-list');
+            if (container) {
+                this.renderPublishHistory(container);
+            }
+            this._updatePublishStats();
+            const modal = document.getElementById('publish-history-modal');
+            if (modal) {
+                modal.classList.add('active');
+            }
+        }
+
+        _updatePublishStats() {
+            const history = Storage.loadPublishHistory();
+            const totalEl = document.getElementById('publish-stat-total');
+            const successEl = document.getElementById('publish-stat-success');
+            const undoneEl = document.getElementById('publish-stat-undone');
+
+            if (!totalEl || !successEl || !undoneEl) return;
+
+            let successCount = 0;
+            let undoneCount = 0;
+
+            for (const record of history) {
+                if (record.success && !record.undone) {
+                    successCount++;
+                }
+                if (record.undone) {
+                    undoneCount++;
+                }
+            }
+
+            totalEl.textContent = history.length;
+            successEl.textContent = successCount;
+            undoneEl.textContent = undoneCount;
+        }
+
+        closePublishHistoryModal() {
+            const modal = document.getElementById('publish-history-modal');
+            if (modal) {
+                modal.classList.remove('active');
+            }
+        }
+
+        bindEvents() {
+            const self = this;
+
+            const btnPublishHistory = document.getElementById('btn-publish-history');
+            if (btnPublishHistory) {
+                btnPublishHistory.addEventListener('click', () => {
+                    self.openPublishHistoryModal();
+                });
+            }
+
+            const btnCloseHistory = document.getElementById('btn-close-publish-history');
+            if (btnCloseHistory) {
+                btnCloseHistory.addEventListener('click', () => {
+                    self.closePublishHistoryModal();
+                });
             }
         }
     }
 
-    return { Workbench };
+    return {
+        Workbench,
+        PUBLISH_TYPES,
+        CONFLICT_TYPES,
+        formatTimestamp
+    };
 })();

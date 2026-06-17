@@ -13,7 +13,8 @@ const Storage = (function() {
         DRAFTS: 'warehouse_game_drafts',
         PUBLISH_UNDO_SNAPSHOT: 'warehouse_game_publish_undo_snapshot',
         LAST_PUBLISH: 'warehouse_game_last_publish',
-        PUBLISH_HISTORY: 'warehouse_game_publish_history'
+        PUBLISH_HISTORY: 'warehouse_game_publish_history',
+        PUBLISH_UNDO_EXTENDED: 'warehouse_game_publish_extended'
     };
 
     const BACKUP_FORMAT_VERSION = 1;
@@ -142,8 +143,18 @@ const Storage = (function() {
         }
     }
 
-    function saveCustomLevel(level, sourceType, operationType) {
+    function saveCustomLevel(firstArg, secondArg, thirdArg) {
         try {
+            let level, sourceType, operationType;
+            if (typeof firstArg === 'string') {
+                level = { ...(secondArg || {}), id: firstArg };
+                sourceType = thirdArg || null;
+                operationType = null;
+            } else {
+                level = firstArg;
+                sourceType = secondArg;
+                operationType = thirdArg;
+            }
             const levels = loadCustomLevels();
             const now = Date.now();
             const existing = levels[level.id];
@@ -1160,11 +1171,6 @@ const Storage = (function() {
                 localStorage.setItem(KEYS.LAST_PUBLISH, JSON.stringify(lastPublish));
             }
 
-            const lastRecord = getLastPublishRecord();
-            if (lastRecord && !lastRecord.undone) {
-                markPublishRecordUndone(lastRecord.recordId);
-            }
-
             saveLastOperation({
                 type: 'undo_publish',
                 levelId: snapshot.levelId,
@@ -1207,51 +1213,73 @@ const Storage = (function() {
         }
     }
 
-    function checkNameConflict(levelName, excludeLevelId) {
-        try {
-            const customLevels = loadCustomLevels();
-            for (const levelId in customLevels) {
-                if (excludeLevelId && levelId === excludeLevelId) continue;
-                const level = customLevels[levelId];
-                if (level.name && level.name === levelName) {
-                    return {
-                        hasConflict: true,
-                        conflictLevelId: levelId,
-                        conflictLevelName: level.name
-                    };
-                }
+    function checkLevelNameConflict(levelName, excludeId) {
+        const customLevels = loadCustomLevels();
+        const conflicts = [];
+
+        for (const id in customLevels) {
+            if (excludeId && id === excludeId) continue;
+            if (customLevels[id].name === levelName) {
+                conflicts.push({
+                    id: id,
+                    name: customLevels[id].name,
+                    levelData: customLevels[id]
+                });
             }
-            const builtinLevels = [LEVEL_1, LEVEL_2];
-            for (const bl of builtinLevels) {
-                if (excludeLevelId && bl.id === excludeLevelId) continue;
-                if (bl.name && bl.name === levelName) {
-                    return {
-                        hasConflict: true,
-                        conflictLevelId: bl.id,
-                        conflictLevelName: bl.name,
-                        isBuiltin: true
-                    };
-                }
-            }
-            return { hasConflict: false };
-        } catch (e) {
-            console.error('Failed to check name conflict:', e);
-            return { hasConflict: false, error: e.message };
         }
+
+        const builtinLevels = [
+            typeof LEVEL_1 !== 'undefined' ? LEVEL_1 : null,
+            typeof LEVEL_2 !== 'undefined' ? LEVEL_2 : null
+        ].filter(Boolean);
+
+        for (const level of builtinLevels) {
+            if (excludeId && level.id === excludeId) continue;
+            if (level.name === levelName) {
+                conflicts.push({
+                    id: level.id,
+                    name: level.name,
+                    levelData: level,
+                    isBuiltin: true
+                });
+            }
+        }
+
+        return conflicts;
     }
 
     function savePublishRecord(record) {
         try {
             const history = loadPublishHistory();
+            const now = Date.now();
             const fullRecord = {
-                recordId: 'publish-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
-                timestamp: Date.now(),
+                recordId: 'publish-' + now + '-' + Math.random().toString(36).slice(2, 8),
+                timestamp: now,
+                sourceType: record?.draftId ? 'draft' : 'unknown',
+                conflictDetails: [],
+                success: false,
+                undone: false,
+                undoable: false,
                 ...record
             };
             history.unshift(fullRecord);
             if (history.length > 50) history.length = 50;
             localStorage.setItem(KEYS.PUBLISH_HISTORY, JSON.stringify(history));
-            return { success: true, recordId: fullRecord.recordId, record: fullRecord };
+
+            if (fullRecord.success && !fullRecord.undone && fullRecord.undoable !== false) {
+                const lastPublishInfo = {
+                    recordId: fullRecord.recordId,
+                    levelId: fullRecord.levelId,
+                    levelName: fullRecord.levelName,
+                    timestamp: fullRecord.timestamp,
+                    success: true,
+                    wasOverwrite: !!fullRecord.wasOverwrite,
+                    undoable: fullRecord.undoable !== false
+                };
+                localStorage.setItem(KEYS.LAST_PUBLISH, JSON.stringify(lastPublishInfo));
+            }
+
+            return { success: true, record: fullRecord };
         } catch (e) {
             console.error('Failed to save publish record:', e);
             return { success: false, error: e.message };
@@ -1268,26 +1296,135 @@ const Storage = (function() {
         }
     }
 
-    function markPublishRecordUndone(recordId) {
+    function getPublishRecord(recordId) {
+        const history = loadPublishHistory();
+        return history.find(r => r.recordId === recordId) || null;
+    }
+
+    function updatePublishRecord(recordId, updates) {
         try {
             const history = loadPublishHistory();
             const idx = history.findIndex(r => r.recordId === recordId);
-            if (idx !== -1) {
-                history[idx].undone = true;
-                history[idx].undoneAt = Date.now();
-                localStorage.setItem(KEYS.PUBLISH_HISTORY, JSON.stringify(history));
-                return { success: true };
-            }
-            return { success: false, reason: 'record_not_found' };
+            if (idx === -1) return { success: false, error: 'record_not_found' };
+            history[idx] = { ...history[idx], ...updates };
+            localStorage.setItem(KEYS.PUBLISH_HISTORY, JSON.stringify(history));
+            return { success: true, record: history[idx] };
         } catch (e) {
-            console.error('Failed to mark publish record undone:', e);
+            console.error('Failed to update publish record:', e);
             return { success: false, error: e.message };
         }
     }
 
-    function getLastPublishRecord() {
-        const history = loadPublishHistory();
-        return history.find(r => !r.undone) || history[0] || null;
+    function markPublishUndone(recordId) {
+        return updatePublishRecord(recordId, {
+            undone: true,
+            undoneAt: Date.now()
+        });
+    }
+
+    function saveExtendedPublishSnapshot(snapshot) {
+        try {
+            localStorage.setItem(KEYS.PUBLISH_UNDO_EXTENDED, JSON.stringify(snapshot));
+            return { success: true };
+        } catch (e) {
+            console.error('Failed to save extended publish snapshot:', e);
+            return { success: false, error: e.message };
+        }
+    }
+
+    function getExtendedPublishSnapshot() {
+        try {
+            const data = localStorage.getItem(KEYS.PUBLISH_UNDO_EXTENDED);
+            return data ? JSON.parse(data) : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function clearExtendedPublishSnapshot() {
+        localStorage.removeItem(KEYS.PUBLISH_UNDO_EXTENDED);
+    }
+
+    function getCustomLevel(levelId) {
+        const levels = loadCustomLevels();
+        const entry = levels[levelId];
+        if (!entry) return null;
+        const result = { ...entry };
+        delete result._meta;
+        return result;
+    }
+
+    function checkLevelConflict(levelId, levelName) {
+        const result = {
+            hasConflict: false,
+            conflictType: 'no_conflict',
+            existingLevel: null,
+            isBuiltin: false,
+            conflictDetails: []
+        };
+
+        if (isBuiltinLevelId(levelId)) {
+            result.hasConflict = true;
+            result.conflictType = 'builtin_conflict';
+            result.isBuiltin = true;
+            result.conflictDetails.push({ type: 'id', reason: `与内置关卡 ID 冲突: ${levelId}` });
+            return result;
+        }
+
+        const customLevels = loadCustomLevels();
+        const idExists = !!customLevels[levelId];
+        let idNameMatches = false;
+        if (idExists && levelName && customLevels[levelId].name === levelName) {
+            idNameMatches = true;
+        }
+        const otherNameConflicts = checkLevelNameConflict(levelName, levelId);
+        const hasOtherNameConflict = otherNameConflicts.length > 0;
+
+        if (idExists && (idNameMatches || hasOtherNameConflict)) {
+            result.hasConflict = true;
+            result.conflictType = 'both_conflict';
+            result.existingLevel = customLevels[levelId];
+            const d = { ...result.existingLevel };
+            delete d._meta;
+            result.existingLevel = d;
+            result.conflictDetails.push({ type: 'id', reason: `关卡 ID 已被占用: ${levelId}` });
+            if (idNameMatches) {
+                result.conflictDetails.push({ type: 'name', reason: `关卡名称 "${levelName}" 与同 ID 关卡名称相同` });
+            } else {
+                result.conflictDetails.push({ type: 'name', reason: `关卡名称 "${levelName}" 已被其他关卡使用` });
+            }
+        } else if (idExists) {
+            result.hasConflict = true;
+            result.conflictType = 'id_conflict';
+            result.existingLevel = customLevels[levelId];
+            const d = { ...result.existingLevel };
+            delete d._meta;
+            result.existingLevel = d;
+            result.conflictDetails.push({ type: 'id', reason: `关卡 ID 已被占用: ${levelId}` });
+        } else if (hasOtherNameConflict) {
+            result.hasConflict = true;
+            result.conflictType = 'name_conflict';
+            result.existingLevel = otherNameConflicts[0].levelData;
+            const d = { ...result.existingLevel };
+            delete d._meta;
+            result.existingLevel = d;
+            result.conflictDetails.push({ type: 'name', reason: `关卡名称 "${levelName}" 已被 ID "${otherNameConflicts[0].id}" 使用` });
+        }
+
+        return result;
+    }
+
+    function clearAllCustomData() {
+        localStorage.removeItem(KEYS.CUSTOM_LEVELS);
+        localStorage.removeItem(KEYS.DRAFTS);
+        localStorage.removeItem(KEYS.PUBLISH_HISTORY);
+        localStorage.removeItem(KEYS.PUBLISH_UNDO_SNAPSHOT);
+        localStorage.removeItem(KEYS.PUBLISH_UNDO_EXTENDED);
+        localStorage.removeItem(KEYS.LAST_PUBLISH);
+        localStorage.removeItem(KEYS.LAST_OPERATION);
+        localStorage.removeItem(KEYS.OPERATION_HISTORY);
+        localStorage.removeItem(KEYS.PROGRESS);
+        localStorage.removeItem(KEYS.UNDO_SNAPSHOT);
     }
 
     function clearPublishHistory() {
@@ -1339,11 +1476,18 @@ const Storage = (function() {
         getPublishUndoSnapshot,
         clearPublishUndoSnapshot,
         getLastPublishInfo,
-        checkNameConflict,
+        checkLevelNameConflict,
         savePublishRecord,
         loadPublishHistory,
-        markPublishRecordUndone,
-        getLastPublishRecord,
+        getPublishRecord,
+        updatePublishRecord,
+        markPublishUndone,
+        saveExtendedPublishSnapshot,
+        getExtendedPublishSnapshot,
+        clearExtendedPublishSnapshot,
+        getCustomLevel,
+        checkLevelConflict,
+        clearAllCustomData,
         clearPublishHistory
     };
 })();

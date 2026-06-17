@@ -27,6 +27,7 @@ const UIController = (function() {
             this._currentDetailTab = 'new';
             this.draftEditor = null;
             this._pendingPublishConfig = null;
+            this.publishWorkbench = null;
         }
 
         init() {
@@ -42,6 +43,9 @@ const UIController = (function() {
 
             this.draftEditor = new DraftEditor.Editor(this);
             this.draftEditor.bindEvents();
+
+            this.publishWorkbench = new PublishWorkbench.Workbench(this);
+            this.publishWorkbench.bindEvents();
 
             const settings = Storage.loadSettings();
             this.infoPanel.updateSettingsUI();
@@ -161,8 +165,8 @@ const UIController = (function() {
             document.getElementById('btn-undo-publish').addEventListener('click', () => this._undoPublish());
             document.getElementById('btn-publish-overwrite').addEventListener('click', () => this._publishOverwrite());
             document.getElementById('btn-publish-save-as-new').addEventListener('click', () => this._publishShowRename());
-            document.getElementById('btn-publish-back-draft').addEventListener('click', () => this._closePublishConflict());
-            document.getElementById('btn-cancel-publish-conflict').addEventListener('click', () => this._closePublishConflict());
+            document.getElementById('btn-publish-back-draft').addEventListener('click', () => this._publishBackToDraft());
+            document.getElementById('btn-cancel-publish-conflict').addEventListener('click', () => this._publishCancel());
 
             document.querySelectorAll('.modal').forEach(modal => {
                 modal.addEventListener('click', (e) => {
@@ -971,7 +975,12 @@ const UIController = (function() {
         }
 
         _undoPublish() {
-            const result = Storage.undoPublish();
+            if (!this.publishWorkbench) {
+                this.publishWorkbench = new PublishWorkbench.Workbench(this);
+            }
+
+            const result = this.publishWorkbench.undoLastPublish();
+
             if (result.success) {
                 this._loadLevels();
                 this._renderMainMenu();
@@ -1033,65 +1042,71 @@ const UIController = (function() {
         }
 
         _publishOverwrite() {
-            const cfg = this._pendingPublishConfig;
-            if (!cfg) return;
-            this._closePublishConflict();
-            this.draftEditor._doPublish(cfg, 'publish_overwrite');
+            if (!this.publishWorkbench) {
+                this.publishWorkbench = new PublishWorkbench.Workbench(this);
+            }
+
+            const result = this.publishWorkbench.handleOverwrite();
+
+            if (result === false) return;
+
+            this._afterPublish();
         }
 
         _publishShowRename() {
+            if (!this.publishWorkbench) {
+                this.publishWorkbench = new PublishWorkbench.Workbench(this);
+            }
+
             const renameDiv = document.getElementById('publish-conflict-rename');
-            renameDiv.classList.remove('hidden');
-            const self = this;
-            const confirmBtn = document.getElementById('btn-publish-save-as-new');
-            const originalText = confirmBtn.textContent;
-            confirmBtn.textContent = '✅ 确认另存';
+            if (renameDiv.classList.contains('hidden')) {
+                this.publishWorkbench.showRenameSection();
+            } else {
+                const result = this.publishWorkbench.handleSaveAsNew();
+                if (result && result.success) {
+                    this._afterPublish();
+                }
+            }
+        }
 
-            const doSaveAs = () => {
-                const newId = document.getElementById('publish-new-id').value.trim();
-                const newName = document.getElementById('publish-new-name').value.trim();
-                if (!newId) {
-                    self.infoPanel.showNotification('请输入新的关卡 ID', 'warning');
-                    return;
-                }
-                if (!newName) {
-                    self.infoPanel.showNotification('请输入新的关卡名称', 'warning');
-                    return;
-                }
-                if (!/^[a-zA-Z0-9_-]+$/.test(newId)) {
-                    self.infoPanel.showNotification('关卡 ID 只能包含字母、数字、下划线和连字符', 'error');
-                    return;
-                }
-                if (Storage.isBuiltinLevelId(newId)) {
-                    self.infoPanel.showNotification('该 ID 与内置关卡冲突，请换一个', 'error');
-                    return;
-                }
-                const existing = Storage.loadCustomLevels();
-                if (existing[newId]) {
-                    self.infoPanel.showNotification('该 ID 已被其他自定义关卡占用，请换一个', 'error');
-                    return;
-                }
-                const cfg = JSON.parse(JSON.stringify(self._pendingPublishConfig));
-                cfg.id = newId;
-                cfg.name = newName;
-                self._closePublishConflict();
-                confirmBtn.removeEventListener('click', doSaveAs);
-                confirmBtn.textContent = originalText;
-                renameDiv.classList.add('hidden');
-                self.draftEditor._doPublish(cfg, 'publish_save_as_new');
-            };
+        _publishBackToDraft() {
+            if (!this.publishWorkbench) {
+                this.publishWorkbench = new PublishWorkbench.Workbench(this);
+            }
+            this.publishWorkbench.handleBackToDraft();
+            this._pendingPublishConfig = null;
+        }
 
-            confirmBtn.removeEventListener('click', this._lastSaveAsHandler);
-            confirmBtn.addEventListener('click', doSaveAs);
-            this._lastSaveAsHandler = doSaveAs;
+        _publishCancel() {
+            if (!this.publishWorkbench) {
+                this.publishWorkbench = new PublishWorkbench.Workbench(this);
+            }
+            this.publishWorkbench.handleCancel();
+            this._pendingPublishConfig = null;
         }
 
         _closePublishConflict() {
-            document.getElementById('publish-conflict-modal').classList.remove('active');
-            document.getElementById('publish-conflict-rename').classList.add('hidden');
-            const btn = document.getElementById('btn-publish-save-as-new');
-            if (btn) btn.textContent = '📝 改名另存';
+            if (this.publishWorkbench) {
+                this.publishWorkbench._closeConflictPanel();
+            }
             this._pendingPublishConfig = null;
+        }
+
+        _afterPublish() {
+            this._loadLevels();
+            this._renderMainMenu();
+            this._renderDraftList();
+            this._restoreLastOperation();
+            this._restoreUndoBar();
+            this._restoreBatchUndoBar();
+            this._restorePublishUndoBar();
+            this._renderLastRestoreCard();
+
+            if (this.draftEditor && this.draftEditor.isEditing) {
+                this.draftEditor.close();
+            }
+
+            this.infoPanel.showNotification('🎉 关卡发布成功！', 'success');
         }
 
         _openBackupAll() {
@@ -1849,6 +1864,43 @@ const UIController = (function() {
                 return;
             }
             this._downloadRestoreRecord(this._currentDetailRecordId);
+        }
+
+        refreshLevelList() {
+            this._loadLevels();
+            this._renderMainMenu();
+            this._renderDraftList();
+        }
+
+        updateLastOpHint() {
+            this._restoreLastOperation();
+            this._restoreUndoBar();
+            this._restoreBatchUndoBar();
+            this._restorePublishUndoBar();
+            this._renderLastRestoreCard();
+        }
+
+        getDraftEditor() {
+            return this.draftEditor;
+        }
+
+        showNotification(message, type) {
+            if (this.infoPanel && this.infoPanel.showNotification) {
+                this.infoPanel.showNotification(message, type);
+            }
+        }
+
+        showError(message) {
+            this.showNotification(message, 'error');
+        }
+
+        showPublishConflict(conflictData) {
+        }
+
+        closePublishConflict() {
+        }
+
+        showPublishRenameSection() {
         }
 
         destroy() {
