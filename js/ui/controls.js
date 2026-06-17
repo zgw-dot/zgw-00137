@@ -25,16 +25,23 @@ const UIController = (function() {
             this._precheckResult = null;
             this._currentDetailRecordId = null;
             this._currentDetailTab = 'new';
+            this.draftEditor = null;
+            this._pendingPublishConfig = null;
         }
 
         init() {
             this._loadLevels();
             this._bindEvents();
             this._renderMainMenu();
+            this._renderDraftList();
             this._restoreLastOperation();
             this._restoreUndoBar();
             this._restoreBatchUndoBar();
+            this._restorePublishUndoBar();
             this._renderLastRestoreCard();
+
+            this.draftEditor = new DraftEditor.Editor(this);
+            this.draftEditor.bindEvents();
 
             const settings = Storage.loadSettings();
             this.infoPanel.updateSettingsUI();
@@ -142,6 +149,20 @@ const UIController = (function() {
             document.getElementById('btn-replay-pause').addEventListener('click', () => this._pauseReplay());
             document.getElementById('btn-replay-speed').addEventListener('click', () => this._toggleReplaySpeed());
             document.getElementById('btn-replay-exit').addEventListener('click', () => this._exitReplay());
+
+            document.getElementById('btn-drafts').addEventListener('click', () => {
+                const el = document.getElementById('drafts-section');
+                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            });
+            document.getElementById('btn-new-draft').addEventListener('click', () => this.draftEditor.openNew());
+            document.getElementById('btn-new-draft-inline').addEventListener('click', () => this.draftEditor.openNew());
+            document.getElementById('btn-load-from-template').addEventListener('click', () => this._openTemplateSelect());
+            document.getElementById('btn-cancel-template').addEventListener('click', () => this._closeTemplateSelect());
+            document.getElementById('btn-undo-publish').addEventListener('click', () => this._undoPublish());
+            document.getElementById('btn-publish-overwrite').addEventListener('click', () => this._publishOverwrite());
+            document.getElementById('btn-publish-save-as-new').addEventListener('click', () => this._publishShowRename());
+            document.getElementById('btn-publish-back-draft').addEventListener('click', () => this._closePublishConflict());
+            document.getElementById('btn-cancel-publish-conflict').addEventListener('click', () => this._closePublishConflict());
 
             document.querySelectorAll('.modal').forEach(modal => {
                 modal.addEventListener('click', (e) => {
@@ -311,7 +332,13 @@ const UIController = (function() {
                 overwrite: '🔄 覆盖',
                 save_as_new: '📝 另存为新关卡',
                 delete: '🗑️ 删除',
-                undo_delete: '↩️ 撤销删除'
+                undo_delete: '↩️ 撤销删除',
+                publish: '🚀 发布',
+                publish_overwrite: '🔄 覆盖发布',
+                publish_save_as_new: '📝 发布为新关卡',
+                undo_publish: '↩️ 撤销发布',
+                batch_restore: '📥 批量恢复',
+                undo_batch_restore: '↩️ 撤销批量恢复'
             };
             const icon = opLabels[op.type] || '📋';
             const statusLabel = op.success ? '成功' : '失败';
@@ -438,9 +465,11 @@ const UIController = (function() {
             this._showScreen('main-menu');
             this._loadLevels();
             this._renderMainMenu();
+            this._renderDraftList();
             this._restoreLastOperation();
             this._restoreUndoBar();
             this._restoreBatchUndoBar();
+            this._restorePublishUndoBar();
             this._renderLastRestoreCard();
         }
 
@@ -816,8 +845,10 @@ const UIController = (function() {
             if (result.success) {
                 this._loadLevels();
                 this._renderMainMenu();
+                this._renderDraftList();
                 this._restoreUndoBar();
                 this._restoreBatchUndoBar();
+                this._restorePublishUndoBar();
                 this._restoreLastOperation();
                 this._renderLastRestoreCard();
                 this.infoPanel.showNotification('已撤销批量恢复，记录已同步更新', 'success');
@@ -829,6 +860,238 @@ const UIController = (function() {
                 };
                 this.infoPanel.showNotification(reasons[result.reason] || '撤销失败', 'error');
             }
+        }
+
+        _renderDraftList() {
+            const list = document.getElementById('draft-list');
+            const drafts = Storage.loadDrafts();
+            const ids = Object.keys(drafts);
+
+            if (ids.length === 0) {
+                list.innerHTML = '<div class="draft-card-empty">暂无草稿 — 点击顶部「➕ 新建草稿」或「以现有关卡为模板」开始创建</div>';
+                return;
+            }
+
+            ids.sort((a, b) => {
+                const ta = drafts[a]._meta?.lastModifiedTime || 0;
+                const tb = drafts[b]._meta?.lastModifiedTime || 0;
+                return tb - ta;
+            });
+
+            const self = this;
+            list.innerHTML = ids.map(id => {
+                const d = drafts[id];
+                const meta = d._meta || {};
+                const v = meta.version || '?';
+                const mod = meta.lastModifiedTime ? formatTimestamp(meta.lastModifiedTime) : '-';
+                const created = meta.createdTime ? formatTimestamp(meta.createdTime) : '-';
+                const mapSize = `${d.mapWidth || '?'}×${d.mapHeight || '?'}`;
+                const orderCount = (d.orders || []).length;
+                return `
+                    <div class="draft-card" data-draft-id="${id}">
+                        <div class="draft-card-title">
+                            <h4 title="${d.name || '未命名'}">${d.name || '未命名草稿'}</h4>
+                            <span class="draft-badge">v${v}</span>
+                        </div>
+                        <div class="draft-card-meta">
+                            <span>📝 ID: ${d.id || '(未设置)'}</span>
+                            <span>🕐 创建: ${created}</span>
+                            <span>✏️ 修改: ${mod}</span>
+                        </div>
+                        <div class="draft-card-stats">
+                            <span>🗺️ ${mapSize}</span>
+                            <span>📦 ${orderCount} 订单</span>
+                            <span>🧑 ${d.workerCount || 0} 人</span>
+                            <span>⏱ ${d.timeLimit || 0}s</span>
+                        </div>
+                        <div class="draft-card-actions">
+                            <button class="btn btn-primary btn-small btn-edit-draft" data-draft-id="${id}">✏️ 编辑</button>
+                            <button class="btn btn-secondary btn-small btn-duplicate-draft" data-draft-id="${id}">📄 复制</button>
+                            <button class="btn btn-danger btn-small btn-delete-draft" data-draft-id="${id}">🗑️ 删除</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            list.querySelectorAll('.btn-edit-draft').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    self.draftEditor.openEdit(btn.dataset.draftId);
+                });
+            });
+
+            list.querySelectorAll('.btn-duplicate-draft').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const src = Storage.loadDraft(btn.dataset.draftId);
+                    if (src) {
+                        const newId = Storage.generateDraftId();
+                        const copy = { ...src };
+                        delete copy._meta;
+                        copy.name = (copy.name || '未命名') + ' (副本)';
+                        Storage.saveDraft(newId, copy);
+                        self._renderDraftList();
+                        self.infoPanel.showNotification('草稿已复制', 'success');
+                    }
+                });
+            });
+
+            list.querySelectorAll('.btn-delete-draft').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const id = btn.dataset.draftId;
+                    const d = Storage.loadDraft(id);
+                    if (!d) return;
+                    if (confirm(`确定删除草稿 "${d.name || '未命名'}" 吗？此操作不可撤销。`)) {
+                        const r = Storage.deleteDraft(id);
+                        if (r.success) {
+                            self._renderDraftList();
+                            self.infoPanel.showNotification('草稿已删除', 'success');
+                        } else {
+                            self.infoPanel.showNotification('删除失败', 'error');
+                        }
+                    }
+                });
+            });
+        }
+
+        _restorePublishUndoBar() {
+            const undoBar = document.getElementById('publish-undo-bar');
+            const snapshot = Storage.getPublishUndoSnapshot();
+            if (!snapshot) {
+                undoBar.classList.add('hidden');
+                return;
+            }
+            const last = Storage.getLastPublishInfo();
+            const name = snapshot.levelName || snapshot.levelId;
+            const wasOverwrite = last?.wasOverwrite;
+            document.getElementById('publish-undo-bar-text').textContent =
+                `刚${wasOverwrite ? '覆盖发布' : '新发布'}关卡 "${name}"，可撤销本次发布`;
+            undoBar.classList.remove('hidden');
+        }
+
+        _undoPublish() {
+            const result = Storage.undoPublish();
+            if (result.success) {
+                this._loadLevels();
+                this._renderMainMenu();
+                this._renderDraftList();
+                this._restoreUndoBar();
+                this._restoreBatchUndoBar();
+                this._restorePublishUndoBar();
+                this._restoreLastOperation();
+                this._renderLastRestoreCard();
+                const msg = result.wasOverwrite
+                    ? `已撤销覆盖发布，"${result.levelName}" 已恢复到之前版本`
+                    : `已撤销发布，新关卡 "${result.levelName}" 已被移除`;
+                this.infoPanel.showNotification(msg, 'success');
+            } else {
+                const reasons = {
+                    no_undo_snapshot: '没有可撤销的发布',
+                    invalid_snapshot: '撤销数据无效',
+                    error: '撤销失败'
+                };
+                this.infoPanel.showNotification(reasons[result.reason] || '撤销失败', 'error');
+            }
+        }
+
+        _openTemplateSelect() {
+            const list = document.getElementById('template-level-list');
+            list.innerHTML = this.availableLevels.map(lv => {
+                const isBuiltin = this._isBuiltinLevel(lv.id);
+                const tag = isBuiltin ? '内置' : '自定义';
+                return `
+                    <div class="template-item" data-level-id="${lv.id}">
+                        <div class="template-item-name">${tag} · ${lv.name}</div>
+                        <div class="template-item-meta">
+                            <span>🆔 ${lv.id}</span>
+                            <span>🗺️ ${lv.mapWidth || '?'}×${lv.mapHeight || '?'}</span>
+                            <span>📦 ${(lv.orders || []).length} 订单</span>
+                            <span>🧑 ${lv.workerCount || 0} 人</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            const self = this;
+            list.querySelectorAll('.template-item').forEach(el => {
+                el.addEventListener('click', () => {
+                    const lvId = el.dataset.levelId;
+                    const lv = self.availableLevels.find(l => l.id === lvId);
+                    if (lv) {
+                        self._closeTemplateSelect();
+                        self.draftEditor.openFromTemplate(lv);
+                    }
+                });
+            });
+
+            document.getElementById('template-select-modal').classList.add('active');
+        }
+
+        _closeTemplateSelect() {
+            document.getElementById('template-select-modal').classList.remove('active');
+        }
+
+        _publishOverwrite() {
+            const cfg = this._pendingPublishConfig;
+            if (!cfg) return;
+            this._closePublishConflict();
+            this.draftEditor._doPublish(cfg, 'publish_overwrite');
+        }
+
+        _publishShowRename() {
+            const renameDiv = document.getElementById('publish-conflict-rename');
+            renameDiv.classList.remove('hidden');
+            const self = this;
+            const confirmBtn = document.getElementById('btn-publish-save-as-new');
+            const originalText = confirmBtn.textContent;
+            confirmBtn.textContent = '✅ 确认另存';
+
+            const doSaveAs = () => {
+                const newId = document.getElementById('publish-new-id').value.trim();
+                const newName = document.getElementById('publish-new-name').value.trim();
+                if (!newId) {
+                    self.infoPanel.showNotification('请输入新的关卡 ID', 'warning');
+                    return;
+                }
+                if (!newName) {
+                    self.infoPanel.showNotification('请输入新的关卡名称', 'warning');
+                    return;
+                }
+                if (!/^[a-zA-Z0-9_-]+$/.test(newId)) {
+                    self.infoPanel.showNotification('关卡 ID 只能包含字母、数字、下划线和连字符', 'error');
+                    return;
+                }
+                if (Storage.isBuiltinLevelId(newId)) {
+                    self.infoPanel.showNotification('该 ID 与内置关卡冲突，请换一个', 'error');
+                    return;
+                }
+                const existing = Storage.loadCustomLevels();
+                if (existing[newId]) {
+                    self.infoPanel.showNotification('该 ID 已被其他自定义关卡占用，请换一个', 'error');
+                    return;
+                }
+                const cfg = JSON.parse(JSON.stringify(self._pendingPublishConfig));
+                cfg.id = newId;
+                cfg.name = newName;
+                self._closePublishConflict();
+                confirmBtn.removeEventListener('click', doSaveAs);
+                confirmBtn.textContent = originalText;
+                renameDiv.classList.add('hidden');
+                self.draftEditor._doPublish(cfg, 'publish_save_as_new');
+            };
+
+            confirmBtn.removeEventListener('click', this._lastSaveAsHandler);
+            confirmBtn.addEventListener('click', doSaveAs);
+            this._lastSaveAsHandler = doSaveAs;
+        }
+
+        _closePublishConflict() {
+            document.getElementById('publish-conflict-modal').classList.remove('active');
+            document.getElementById('publish-conflict-rename').classList.add('hidden');
+            const btn = document.getElementById('btn-publish-save-as-new');
+            if (btn) btn.textContent = '📝 改名另存';
+            this._pendingPublishConfig = null;
         }
 
         _openBackupAll() {

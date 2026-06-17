@@ -11,6 +11,8 @@
         <header class="game-header">
             <h1>🏭 仓库拣货调度大师</h1>
             <div class="header-actions">
+                <button id="btn-drafts" class="btn btn-primary">📝 草稿箱</button>
+                <button id="btn-new-draft" class="btn btn-success">➕ 新建草稿</button>
                 <button id="btn-settings" class="btn btn-secondary">⚙️ 设置</button>
                 <button id="btn-import" class="btn btn-secondary">📥 导入关卡</button>
                 <button id="btn-export" class="btn btn-secondary">📤 导出关卡</button>
@@ -34,6 +36,10 @@
                         <span id="batch-undo-bar-text"></span>
                         <button id="btn-undo-batch-restore" class="btn btn-danger btn-small">↩️ 撤销批量恢复</button>
                     </div>
+                    <div id="publish-undo-bar" class="publish-undo-bar hidden">
+                        <span id="publish-undo-bar-text"></span>
+                        <button id="btn-undo-publish" class="btn btn-danger btn-small">↩️ 撤销发布</button>
+                    </div>
                     <div id="last-restore-card" class="last-restore-card hidden">
                         <div class="last-restore-card-header">
                             <span class="last-restore-card-title">📋 最近批量恢复记录</span>
@@ -42,6 +48,16 @@
                         <div id="last-restore-card-content" class="last-restore-card-content"></div>
                     </div>
                     <div id="level-list" class="level-list"></div>
+                    <div id="drafts-section" class="drafts-section">
+                        <div class="drafts-section-header">
+                            <h3>📝 草稿箱</h3>
+                            <div class="drafts-actions-inline">
+                                <button id="btn-new-draft-inline" class="btn btn-success btn-small">➕ 新建草稿</button>
+                                <button id="btn-load-from-template" class="btn btn-secondary btn-small">📋 以现有关卡为模板</button>
+                            </div>
+                        </div>
+                        <div id="draft-list" class="draft-list"></div>
+                    </div>
                     <div class="menu-info">
                         <p>🎯 目标：在截止时间内完成所有订单拣货</p>
                         <p>⚠️ 注意：单向巷道不能同时进入两名拣货员</p>
@@ -174,6 +190,153 @@
                     <div id="replay-info" class="replay-info"></div>
                     <div id="replay-map" class="warehouse-map"></div>
                     <div id="replay-log" class="replay-log"></div>
+                </div>
+            </div>
+
+            <div id="draft-editor-screen" class="screen">
+                <div class="draft-editor-container">
+                    <div class="draft-editor-header">
+                        <h2 id="draft-editor-title">📝 新建关卡草稿</h2>
+                        <div class="draft-editor-header-actions">
+                            <button id="btn-draft-save" class="btn btn-primary">💾 保存草稿</button>
+                            <button id="btn-draft-publish" class="btn btn-success">🚀 发布关卡</button>
+                            <button id="btn-draft-back" class="btn btn-secondary">⬅️ 返回主菜单</button>
+                        </div>
+                    </div>
+                    <div class="draft-editor-body">
+                        <div class="draft-editor-left">
+                            <div class="editor-section">
+                                <h3>📋 基本信息</h3>
+                                <div class="form-grid">
+                                    <div class="form-item">
+                                        <label>关卡 ID：</label>
+                                        <input type="text" id="draft-id" placeholder="例如：my-level-1">
+                                    </div>
+                                    <div class="form-item">
+                                        <label>关卡名称：</label>
+                                        <input type="text" id="draft-name" placeholder="例如：我的自定义关卡">
+                                    </div>
+                                    <div class="form-item">
+                                        <label>难度等级：</label>
+                                        <input type="number" id="draft-difficulty" min="1" max="10" value="1">
+                                    </div>
+                                    <div class="form-item">
+                                        <label>目标分数：</label>
+                                        <input type="number" id="draft-target-score" min="0" value="500">
+                                    </div>
+                                    <div class="form-item form-item-full">
+                                        <label>关卡描述：</label>
+                                        <textarea id="draft-description" rows="2" placeholder="关卡简介，告诉玩家目标和要点..."></textarea>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="editor-section">
+                                <h3>🗺️ 地图尺寸</h3>
+                                <div class="form-grid">
+                                    <div class="form-item">
+                                        <label>宽度（列）：</label>
+                                        <input type="number" id="draft-map-width" min="4" max="20" value="8">
+                                    </div>
+                                    <div class="form-item">
+                                        <label>高度（行）：</label>
+                                        <input type="number" id="draft-map-height" min="4" max="20" value="8">
+                                    </div>
+                                    <div class="form-item">
+                                        <label>调整尺寸时：</label>
+                                        <select id="draft-map-resize-mode">
+                                            <option value="preserve">保留已有内容</option>
+                                            <option value="clear">清空重建</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <button id="btn-apply-map-size" class="btn btn-secondary btn-small">✅ 应用尺寸</button>
+                            </div>
+
+                            <div class="editor-section">
+                                <h3>🧱 地图编辑器</h3>
+                                <div class="map-editor-toolbar">
+                                    <label>当前工具：</label>
+                                    <select id="map-tool-select">
+                                        <option value="e">⬜ 空地（不可走）</option>
+                                        <option value="a" selected>🛣️ 通道（双向）</option>
+                                        <option value="a:up">⬆️ 通道（仅向上）</option>
+                                        <option value="a:down">⬇️ 通道（仅向下）</option>
+                                        <option value="a:left">⬅️ 通道（仅向左）</option>
+                                        <option value="a:right">➡️ 通道（仅向右）</option>
+                                        <option value="s">📦 自动货架</option>
+                                        <option value="p">📋 打包台</option>
+                                        <option value="sp">🚶 出生点</option>
+                                    </select>
+                                    <span class="tool-hint">点击格子应用工具；货架会自动命名为 S-列-行</span>
+                                </div>
+                                <div id="draft-map-grid" class="map-grid"></div>
+                                <div class="map-legend">
+                                    <span><span class="legend-aisle"></span>通道</span>
+                                    <span><span class="legend-shelf"></span>货架</span>
+                                    <span><span class="legend-packing"></span>打包台</span>
+                                    <span><span class="legend-spawn"></span>出生点</span>
+                                    <span><span class="legend-empty"></span>空地</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="draft-editor-right">
+                            <div class="editor-section">
+                                <h3>⏱️ 时间与资源</h3>
+                                <div class="form-grid">
+                                    <div class="form-item">
+                                        <label>时间限制（秒）：</label>
+                                        <input type="number" id="draft-time-limit" min="30" max="3600" value="180">
+                                    </div>
+                                    <div class="form-item">
+                                        <label>拣货员数量：</label>
+                                        <input type="number" id="draft-worker-count" min="1" max="8" value="2">
+                                    </div>
+                                    <div class="form-item">
+                                        <label>推车数量：</label>
+                                        <input type="number" id="draft-cart-count" min="0" max="8" value="2">
+                                    </div>
+                                    <div class="form-item">
+                                        <label>拣货耗时（秒）：</label>
+                                        <input type="number" id="draft-pick-duration" min="1" max="30" value="3">
+                                    </div>
+                                    <div class="form-item">
+                                        <label>打包耗时（秒）：</label>
+                                        <input type="number" id="draft-pack-duration" min="1" max="30" value="2">
+                                    </div>
+                                    <div class="form-item">
+                                        <label>通关最少订单：</label>
+                                        <input type="number" id="draft-min-orders" min="1" value="4">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="editor-section">
+                                <div class="section-header">
+                                    <h3>📦 订单列表</h3>
+                                    <button id="btn-add-order" class="btn btn-primary btn-small">➕ 添加订单</button>
+                                </div>
+                                <div id="draft-orders-list" class="orders-editor-list"></div>
+                            </div>
+
+                            <div class="editor-section">
+                                <div class="section-header">
+                                    <h3>✅ 实时校验</h3>
+                                    <button id="btn-validate-draft" class="btn btn-secondary btn-small">🔄 重新校验</button>
+                                </div>
+                                <div id="draft-validation" class="validation-result"></div>
+                            </div>
+
+                            <div class="editor-section">
+                                <div class="section-header">
+                                    <h3>📄 JSON 预览</h3>
+                                    <button id="btn-copy-draft-json" class="btn btn-secondary btn-small">📋 复制</button>
+                                </div>
+                                <textarea id="draft-json-preview" rows="10" readonly class="json-preview"></textarea>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -367,6 +530,53 @@
                 </div>
             </div>
 
+            <div id="template-select-modal" class="modal">
+                <div class="modal-content modal-wide">
+                    <h2>📋 选择关卡作为模板</h2>
+                    <p>选择一个现有关卡，载入其配置到草稿编辑器中修改：</p>
+                    <div id="template-level-list" class="template-level-list"></div>
+                    <button id="btn-cancel-template" class="btn btn-secondary">取消</button>
+                </div>
+            </div>
+
+            <div id="publish-conflict-modal" class="modal">
+                <div class="modal-content modal-wide">
+                    <h2>⚠️ 发布冲突</h2>
+                    <div id="publish-conflict-builtin" class="conflict-builtin-warning hidden">
+                        <p>🚫 该关卡 ID 与内置关卡冲突，无法覆盖内置关卡。</p>
+                        <p>请修改关卡 ID 后重试，或选择"另存为新关卡"。</p>
+                    </div>
+                    <div id="publish-conflict-diff" class="conflict-diff hidden">
+                        <p>检测到同 ID 关卡已存在，以下字段将发生变化：</p>
+                        <table class="diff-table">
+                            <thead>
+                                <tr><th>字段</th><th>当前值</th><th>草稿值</th></tr>
+                            </thead>
+                            <tbody id="publish-diff-body"></tbody>
+                        </table>
+                    </div>
+                    <div id="publish-conflict-rename" class="conflict-rename hidden">
+                        <p>请输入新的关卡 ID 和名称另存为新关卡：</p>
+                        <div class="form-grid">
+                            <div class="form-item">
+                                <label>新关卡 ID：</label>
+                                <input type="text" id="publish-new-id" placeholder="例如：my-level-1-copy">
+                            </div>
+                            <div class="form-item">
+                                <label>新关卡名称：</label>
+                                <input type="text" id="publish-new-name" placeholder="例如：我的自定义关卡 (副本)">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="conflict-actions" id="publish-conflict-actions">
+                        <button id="btn-publish-overwrite" class="btn btn-warning">🔄 直接覆盖</button>
+                        <button id="btn-publish-save-as-new" class="btn btn-primary">📝 改名另存</button>
+                        <button id="btn-publish-back-draft" class="btn btn-secondary">↩️ 回草稿继续修</button>
+                        <button id="btn-cancel-publish-conflict" class="btn btn-danger">取消发布</button>
+                    </div>
+                </div>
+            </div>
+
             <div id="notification" class="notification hidden"></div>
         </main>
     </div>
@@ -382,6 +592,7 @@
     <script src="js/ui/controls.js"></script>
     <script src="js/levels/level1.js"></script>
     <script src="js/levels/level2.js"></script>
+    <script src="js/ui/draft-editor.js"></script>
     <script src="js/main.js"></script>
 </body>
 </html>

@@ -9,7 +9,10 @@ const Storage = (function() {
         UNDO_SNAPSHOT: 'warehouse_game_undo_snapshot',
         BATCH_RESTORE_SNAPSHOT: 'warehouse_game_batch_restore_snapshot',
         LAST_BATCH_RESTORE: 'warehouse_game_last_batch_restore',
-        BATCH_RESTORE_HISTORY: 'warehouse_game_batch_restore_history'
+        BATCH_RESTORE_HISTORY: 'warehouse_game_batch_restore_history',
+        DRAFTS: 'warehouse_game_drafts',
+        PUBLISH_UNDO_SNAPSHOT: 'warehouse_game_publish_undo_snapshot',
+        LAST_PUBLISH: 'warehouse_game_last_publish'
     };
 
     const BACKUP_FORMAT_VERSION = 1;
@@ -1027,6 +1030,177 @@ const Storage = (function() {
         localStorage.removeItem(KEYS.LAST_BATCH_RESTORE);
     }
 
+    function saveDraft(draftId, draftData) {
+        try {
+            const drafts = loadDrafts();
+            const now = Date.now();
+            const existing = drafts[draftId];
+            drafts[draftId] = {
+                ...draftData,
+                _meta: {
+                    createdTime: existing?._meta?.createdTime || now,
+                    lastModifiedTime: now,
+                    version: (existing?._meta?.version || 0) + 1
+                }
+            };
+            localStorage.setItem(KEYS.DRAFTS, JSON.stringify(drafts));
+            return { success: true, draftId, version: drafts[draftId]._meta.version };
+        } catch (e) {
+            console.error('Failed to save draft:', e);
+            return { success: false, error: e.message };
+        }
+    }
+
+    function loadDrafts() {
+        try {
+            const data = localStorage.getItem(KEYS.DRAFTS);
+            return data ? JSON.parse(data) : {};
+        } catch (e) {
+            console.error('Failed to load drafts:', e);
+            return {};
+        }
+    }
+
+    function loadDraft(draftId) {
+        const drafts = loadDrafts();
+        return drafts[draftId] || null;
+    }
+
+    function deleteDraft(draftId) {
+        try {
+            const drafts = loadDrafts();
+            if (!drafts[draftId]) return { success: false, reason: 'not_found' };
+            delete drafts[draftId];
+            localStorage.setItem(KEYS.DRAFTS, JSON.stringify(drafts));
+            return { success: true };
+        } catch (e) {
+            console.error('Failed to delete draft:', e);
+            return { success: false, error: e.message };
+        }
+    }
+
+    function generateDraftId() {
+        const drafts = loadDrafts();
+        let id = 'draft-' + Date.now().toString(36);
+        let counter = 1;
+        while (drafts[id]) {
+            id = 'draft-' + Date.now().toString(36) + '-' + counter;
+            counter++;
+        }
+        return id;
+    }
+
+    function savePublishUndoSnapshot(levelData, previousLevelData) {
+        try {
+            const snapshot = {
+                levelId: levelData.id,
+                levelName: levelData.name,
+                newLevelData: levelData,
+                previousLevelData: previousLevelData || null,
+                previousProgress: loadProgress(),
+                publishedAt: Date.now()
+            };
+            localStorage.setItem(KEYS.PUBLISH_UNDO_SNAPSHOT, JSON.stringify(snapshot));
+
+            const publishInfo = {
+                levelId: levelData.id,
+                levelName: levelData.name,
+                timestamp: snapshot.publishedAt,
+                success: true,
+                wasOverwrite: !!previousLevelData,
+                undoable: true
+            };
+            localStorage.setItem(KEYS.LAST_PUBLISH, JSON.stringify(publishInfo));
+
+            saveLastOperation({
+                type: 'publish',
+                levelId: levelData.id,
+                levelName: levelData.name,
+                timestamp: snapshot.publishedAt,
+                success: true,
+                wasOverwrite: !!previousLevelData,
+                undoable: true
+            });
+
+            return { success: true };
+        } catch (e) {
+            console.error('Failed to save publish snapshot:', e);
+            return { success: false, error: e.message };
+        }
+    }
+
+    function undoPublish() {
+        try {
+            const snapshotData = localStorage.getItem(KEYS.PUBLISH_UNDO_SNAPSHOT);
+            if (!snapshotData) {
+                return { success: false, reason: 'no_undo_snapshot' };
+            }
+            const snapshot = JSON.parse(snapshotData);
+
+            const currentLevels = loadCustomLevels();
+            if (snapshot.previousLevelData) {
+                currentLevels[snapshot.levelId] = snapshot.previousLevelData;
+            } else {
+                delete currentLevels[snapshot.levelId];
+            }
+            localStorage.setItem(KEYS.CUSTOM_LEVELS, JSON.stringify(currentLevels));
+
+            if (snapshot.previousProgress) {
+                saveProgress(snapshot.previousProgress);
+            }
+
+            localStorage.removeItem(KEYS.PUBLISH_UNDO_SNAPSHOT);
+
+            const lastPublish = getLastPublishInfo();
+            if (lastPublish) {
+                lastPublish.undoable = false;
+                lastPublish.undone = true;
+                lastPublish.undoneAt = Date.now();
+                localStorage.setItem(KEYS.LAST_PUBLISH, JSON.stringify(lastPublish));
+            }
+
+            saveLastOperation({
+                type: 'undo_publish',
+                levelId: snapshot.levelId,
+                levelName: snapshot.levelName,
+                timestamp: Date.now(),
+                success: true
+            });
+
+            return {
+                success: true,
+                levelId: snapshot.levelId,
+                levelName: snapshot.levelName,
+                wasOverwrite: !!snapshot.previousLevelData
+            };
+        } catch (e) {
+            console.error('Failed to undo publish:', e);
+            return { success: false, reason: 'error', error: e.message };
+        }
+    }
+
+    function getPublishUndoSnapshot() {
+        try {
+            const data = localStorage.getItem(KEYS.PUBLISH_UNDO_SNAPSHOT);
+            return data ? JSON.parse(data) : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function clearPublishUndoSnapshot() {
+        localStorage.removeItem(KEYS.PUBLISH_UNDO_SNAPSHOT);
+    }
+
+    function getLastPublishInfo() {
+        try {
+            const data = localStorage.getItem(KEYS.LAST_PUBLISH);
+            return data ? JSON.parse(data) : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
     return {
         saveProgress,
         loadProgress,
@@ -1061,6 +1235,16 @@ const Storage = (function() {
         clearLastBatchRestoreInfo,
         loadBatchRestoreHistory,
         getBatchRestoreRecord,
-        exportBatchRestoreRecordAsJson
+        exportBatchRestoreRecordAsJson,
+        saveDraft,
+        loadDrafts,
+        loadDraft,
+        deleteDraft,
+        generateDraftId,
+        savePublishUndoSnapshot,
+        undoPublish,
+        getPublishUndoSnapshot,
+        clearPublishUndoSnapshot,
+        getLastPublishInfo
     };
 })();
