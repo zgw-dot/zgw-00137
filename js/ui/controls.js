@@ -935,12 +935,12 @@ const UIController = (function() {
                 const isBad = precheck.badEntries.some(b => b.index === i);
                 const isBuiltin = precheck.builtinConflict.some(b => b.index === i);
 
-                if (isBad || isBuiltin) {
+                if (isBad) {
                     this._restoreDecisions[i] = { action: 'skip' };
                     continue;
                 }
 
-                if (Storage.isBuiltinLevelId(entry.id)) {
+                if (isBuiltin || Storage.isBuiltinLevelId(entry.id)) {
                     this._restoreDecisions[i] = { action: 'skip' };
                     continue;
                 }
@@ -955,6 +955,18 @@ const UIController = (function() {
 
             this._renderPrecheckResult();
             document.getElementById('restore-precheck-result').classList.remove('hidden');
+        }
+
+        _generateCopyPreview(originalId, originalName) {
+            const existingLevels = Storage.loadCustomLevels();
+            let newId = originalId + '-copy';
+            let counter = 1;
+            while (existingLevels[newId] || Storage.isBuiltinLevelId(newId)) {
+                newId = originalId + '-copy-' + counter;
+                counter++;
+            }
+            const newName = (originalName || originalId) + ' (副本)';
+            return { newId, newName };
         }
 
         _renderPrecheckResult() {
@@ -1025,17 +1037,41 @@ const UIController = (function() {
             const builtinList = document.getElementById('precheck-builtin-list');
             if (result.builtinConflict.length > 0) {
                 builtinSection.classList.remove('hidden');
-                builtinList.innerHTML = result.builtinConflict.map(item => `
-                    <div class="precheck-item precheck-item-builtin">
-                        <div class="precheck-item-info">
-                            <span class="precheck-item-name">🚫 ${item.name}</span>
-                            <span class="precheck-item-id">(${item.id})</span>
+                builtinList.innerHTML = result.builtinConflict.map(item => {
+                    const decision = this._restoreDecisions[item.index]?.action || 'skip';
+                    const preview = this._generateCopyPreview(item.id, item.name);
+                    return `
+                        <div class="precheck-item precheck-item-builtin" data-index="${item.index}">
+                            <div class="precheck-item-info">
+                                <span class="precheck-item-name">🚫 ${item.name}</span>
+                                <span class="precheck-item-id">(${item.id})</span>
+                            </div>
+                            <div class="precheck-item-action">
+                                <select class="decision-select builtin-decision-select" data-index="${item.index}">
+                                    <option value="skip" ${decision === 'skip' ? 'selected' : ''}>跳过</option>
+                                    <option value="save_as_new" ${decision === 'save_as_new' ? 'selected' : ''}>另存为副本</option>
+                                </select>
+                                <div class="builtin-preview ${decision === 'save_as_new' ? '' : 'hidden'}" data-preview-index="${item.index}">
+                                    <div class="preview-label">→ 新 ID: <span class="preview-id">${preview.newId}</span></div>
+                                    <div class="preview-label">→ 新名称: <span class="preview-name">${preview.newName}</span></div>
+                                </div>
+                            </div>
                         </div>
-                        <div class="precheck-item-action">
-                            <span class="action-label action-disabled">无法导入（内置ID）</span>
-                        </div>
-                    </div>
-                `).join('');
+                    `;
+                }).join('');
+
+                builtinList.querySelectorAll('.builtin-decision-select').forEach(select => {
+                    select.addEventListener('change', (e) => {
+                        const idx = parseInt(e.target.dataset.index);
+                        this._restoreDecisions[idx] = { action: e.target.value };
+                        const previewEl = builtinList.querySelector(`[data-preview-index="${idx}"]`);
+                        if (e.target.value === 'save_as_new') {
+                            previewEl.classList.remove('hidden');
+                        } else {
+                            previewEl.classList.add('hidden');
+                        }
+                    });
+                });
             } else {
                 builtinSection.classList.add('hidden');
             }
@@ -1067,6 +1103,12 @@ const UIController = (function() {
                 this._restoreDecisions[item.index] = { action: action };
             }
 
+            if (action === 'save_as_new' || action === 'skip') {
+                for (const item of this._precheckResult.builtinConflict) {
+                    this._restoreDecisions[item.index] = { action: action };
+                }
+            }
+
             this._renderPrecheckResult();
         }
 
@@ -1080,15 +1122,32 @@ const UIController = (function() {
             const allLevels = this._pendingRestoreData.levels;
             for (let i = 0; i < allLevels.length; i++) {
                 const entry = allLevels[i];
-                if (entry && entry.id && !Storage.isBuiltinLevelId(entry.id)) {
-                    const existingLevels = Storage.loadCustomLevels();
-                    if (existingLevels[entry.id]) {
-                        decisions[i] = this._restoreDecisions[i] || { action: 'skip' };
-                    } else {
-                        decisions[i] = this._restoreDecisions[i] || { action: 'import' };
-                    }
-                } else {
+                if (!entry || !entry.id) {
                     decisions[i] = { action: 'skip' };
+                    continue;
+                }
+
+                const isBad = this._precheckResult.badEntries.some(b => b.index === i);
+                if (isBad) {
+                    decisions[i] = { action: 'skip' };
+                    continue;
+                }
+
+                if (Storage.isBuiltinLevelId(entry.id)) {
+                    const decision = this._restoreDecisions[i];
+                    if (decision && (decision.action === 'save_as_new' || decision.action === 'skip')) {
+                        decisions[i] = decision;
+                    } else {
+                        decisions[i] = { action: 'skip' };
+                    }
+                    continue;
+                }
+
+                const existingLevels = Storage.loadCustomLevels();
+                if (existingLevels[entry.id]) {
+                    decisions[i] = this._restoreDecisions[i] || { action: 'skip' };
+                } else {
+                    decisions[i] = this._restoreDecisions[i] || { action: 'import' };
                 }
             }
 

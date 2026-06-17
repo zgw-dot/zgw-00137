@@ -1213,6 +1213,48 @@ body {
     border-color: #667eea;
 }
 
+.builtin-preview {
+    margin-top: 8px;
+    padding: 10px 12px;
+    background: linear-gradient(135deg, #f0fff4 0%, #e6fffa 100%);
+    border: 1px solid #9ae6b4;
+    border-radius: 6px;
+    font-size: 12px;
+}
+
+.builtin-preview.hidden {
+    display: none;
+}
+
+.preview-label {
+    display: block;
+    color: #276749;
+    margin-bottom: 4px;
+    font-weight: 500;
+}
+
+.preview-id {
+    font-family: 'Consolas', 'Monaco', monospace;
+    background: #c6f6d5;
+    padding: 2px 6px;
+    border-radius: 3px;
+    color: #22543d;
+    font-weight: 600;
+}
+
+.preview-name {
+    font-family: 'Consolas', 'Monaco', monospace;
+    background: #c6f6d5;
+    padding: 2px 6px;
+    border-radius: 3px;
+    color: #22543d;
+    font-weight: 600;
+}
+
+.precheck-item-builtin {
+    border-left: 4px solid #ed8936;
+}
+
 .restore-actions {
     margin-top: 20px;
     padding-top: 16px;
