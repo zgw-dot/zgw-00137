@@ -552,14 +552,13 @@ const DraftEditor = (function() {
 
             const result = this.publishWorkbench.checkAndPublish(this.currentDraftId, config, 'draft_publish');
 
-            if (result.success) {
+            if (result.success && result.needUIRefresh) {
                 this.ui.infoPanel.showNotification(
                     `🎉 关卡 "${config.name}" 发布成功！草稿已自动删除`,
                     'success'
                 );
                 this.close();
-            } else if (result.conflict) {
-                this.ui._pendingPublishConfig = JSON.parse(JSON.stringify(config));
+                this.ui._syncAfterPublish(result);
             }
         }
     }

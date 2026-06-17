@@ -981,19 +981,8 @@ const UIController = (function() {
 
             const result = this.publishWorkbench.undoLastPublish();
 
-            if (result.success) {
-                this._loadLevels();
-                this._renderMainMenu();
-                this._renderDraftList();
-                this._restoreUndoBar();
-                this._restoreBatchUndoBar();
-                this._restorePublishUndoBar();
-                this._restoreLastOperation();
-                this._renderLastRestoreCard();
-                const msg = result.wasOverwrite
-                    ? `已撤销覆盖发布，"${result.levelName}" 已恢复到之前版本`
-                    : `已撤销发布，新关卡 "${result.levelName}" 已被移除`;
-                this.infoPanel.showNotification(msg, 'success');
+            if (result.needUIRefresh) {
+                this._syncAfterPublish(result);
             } else {
                 const reasons = {
                     no_undo_snapshot: '没有可撤销的发布',
@@ -1048,9 +1037,9 @@ const UIController = (function() {
 
             const result = this.publishWorkbench.handleOverwrite();
 
-            if (result === false) return;
+            if (!result || !result.needUIRefresh) return;
 
-            this._afterPublish();
+            this._syncAfterPublish(result);
         }
 
         _publishShowRename() {
@@ -1063,8 +1052,8 @@ const UIController = (function() {
                 this.publishWorkbench.showRenameSection();
             } else {
                 const result = this.publishWorkbench.handleSaveAsNew();
-                if (result && result.success) {
-                    this._afterPublish();
+                if (result && result.needUIRefresh) {
+                    this._syncAfterPublish(result);
                 }
             }
         }
@@ -1073,26 +1062,29 @@ const UIController = (function() {
             if (!this.publishWorkbench) {
                 this.publishWorkbench = new PublishWorkbench.Workbench(this);
             }
-            this.publishWorkbench.handleBackToDraft();
-            this._pendingPublishConfig = null;
+            const result = this.publishWorkbench.handleBackToDraft();
+            if (result && result.needUIRefresh) {
+                this._syncAfterPublish(result);
+            }
         }
 
         _publishCancel() {
             if (!this.publishWorkbench) {
                 this.publishWorkbench = new PublishWorkbench.Workbench(this);
             }
-            this.publishWorkbench.handleCancel();
-            this._pendingPublishConfig = null;
+            const result = this.publishWorkbench.handleCancel();
+            if (result && result.needUIRefresh) {
+                this._syncAfterPublish(result);
+            }
         }
 
         _closePublishConflict() {
             if (this.publishWorkbench) {
                 this.publishWorkbench._closeConflictPanel();
             }
-            this._pendingPublishConfig = null;
         }
 
-        _afterPublish() {
+        _syncAfterPublish(result) {
             this._loadLevels();
             this._renderMainMenu();
             this._renderDraftList();
@@ -1102,11 +1094,26 @@ const UIController = (function() {
             this._restorePublishUndoBar();
             this._renderLastRestoreCard();
 
-            if (this.draftEditor && this.draftEditor.isEditing) {
+            if (result.success && this.draftEditor && this.draftEditor.isEditing) {
                 this.draftEditor.close();
             }
 
-            this.infoPanel.showNotification('🎉 关卡发布成功！', 'success');
+            const notificationMap = {
+                publish_new: `🎉 关卡 "${result.levelName}" 发布成功！`,
+                publish_overwrite: `🔄 关卡 "${result.levelName}" 覆盖发布成功！`,
+                publish_save_as_new: `📝 关卡 "${result.newLevelName}" 另存发布成功！`,
+                conflict_back_to_draft: '已退回草稿，可继续修改后再发布',
+                conflict_cancel: '发布已取消',
+                undo_publish: result.wasOverwrite
+                    ? `已撤销覆盖发布，"${result.levelName}" 已恢复到之前版本`
+                    : `已撤销发布，新关卡 "${result.levelName}" 已被移除`
+            };
+
+            const msg = notificationMap[result.type];
+            const type = result.success ? 'success' : 'info';
+            if (msg) {
+                this.infoPanel.showNotification(msg, type);
+            }
         }
 
         _openBackupAll() {
